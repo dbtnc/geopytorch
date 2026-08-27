@@ -1,2 +1,1 @@
-# geopytorch
-GeoPyTorch
+# GeoPyTorch
