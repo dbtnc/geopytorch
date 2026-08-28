@@ -11,6 +11,12 @@ import gpytorch
 import torch
 from torch import Tensor
 
+from geopytorch.covariance import (
+    COVARIANCE_MODELS,
+    CovarianceModel,
+    covariance_kernel,
+)
+
 Locations: TypeAlias = Tensor | Sequence[Sequence[float]]
 Values: TypeAlias = Tensor | Sequence[float]
 LikelihoodMethod: TypeAlias = Literal["ml", "reml"]
@@ -74,9 +80,13 @@ class _BaseKriging:
         *,
         kernel: gpytorch.kernels.Kernel | None = None,
         likelihood: gpytorch.likelihoods.GaussianLikelihood | None = None,
+        covariance_model: CovarianceModel = "matern",
         matern_nu: float = 1.5,
         ard: bool = False,
     ) -> None:
+        if covariance_model not in COVARIANCE_MODELS:
+            choices = ", ".join(COVARIANCE_MODELS)
+            raise ValueError(f"covariance_model must be one of: {choices}")
         if matern_nu not in (0.5, 1.5, 2.5):
             raise ValueError("matern_nu must be one of 0.5, 1.5, or 2.5")
         if kernel is not None and not isinstance(kernel, gpytorch.kernels.Kernel):
@@ -88,6 +98,7 @@ class _BaseKriging:
 
         self._kernel_template = kernel
         self._likelihood_template = likelihood
+        self.covariance_model = covariance_model
         self.matern_nu = matern_nu
         self.ard = ard
         self.training_losses_: list[float] = []
@@ -238,12 +249,14 @@ class _BaseKriging:
             return self._kernel_template.to(device=train_x.device, dtype=train_x.dtype)
 
         ard_num_dims = train_x.shape[1] if self.ard else None
-        base_kernel = gpytorch.kernels.MaternKernel(
-            nu=self.matern_nu, ard_num_dims=ard_num_dims
-        )
-        kernel = gpytorch.kernels.ScaleKernel(base_kernel).to(
+        kernel = covariance_kernel(
+            self.covariance_model,
+            matern_nu=self.matern_nu,
+            ard_num_dims=ard_num_dims,
+        ).to(
             device=train_x.device, dtype=train_x.dtype
         )
+        base_kernel = kernel.base_kernel
 
         target_variance = train_y.var(unbiased=False).clamp_min(1e-3)
         nonzero_distances = torch.pdist(train_x).detach()
@@ -335,6 +348,7 @@ class SimpleKriging(_BaseKriging):
         *,
         kernel: gpytorch.kernels.Kernel | None = None,
         likelihood: gpytorch.likelihoods.GaussianLikelihood | None = None,
+        covariance_model: CovarianceModel = "matern",
         matern_nu: float = 1.5,
         ard: bool = False,
     ) -> None:
@@ -343,6 +357,7 @@ class SimpleKriging(_BaseKriging):
         super().__init__(
             kernel=kernel,
             likelihood=likelihood,
+            covariance_model=covariance_model,
             matern_nu=matern_nu,
             ard=ard,
         )
