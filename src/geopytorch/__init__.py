@@ -1,2 +1,5 @@
-def hello() -> str:
-    return "Hello from geopytorch!"
+"""GeoPyTorch public API."""
+
+from geopytorch.kriging import KrigingPrediction, OrdinaryKriging, SimpleKriging
+
+__all__ = ["KrigingPrediction", "OrdinaryKriging", "SimpleKriging"]
