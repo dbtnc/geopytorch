@@ -1,0 +1,23 @@
+Package: geopytorch
+Type: Package
+Title: R Interface to GeoPyTorch
+Version: 0.0.0.9000
+Authors@R: person(
+    given = "Daniel",
+    family = "Tinoco",
+    role = c("aut", "cre"),
+    email = "203029199+dbtnc@users.noreply.github.com"
+  )
+Description: Provides an R interface to the GeoPyTorch Python package through
+    'reticulate', with a set of convenient helper functions.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.1.0)
+Imports:
+    reticulate (>= 1.41.0),
+    stats
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+SystemRequirements: Python (>= 3.12)
