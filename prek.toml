@@ -8,3 +8,10 @@ hooks = [
   # Run the formatter.
   { id = "ruff-format", types_or = ["python", "pyi", "markdown"] },
 ]
+
+[[repos]]
+repo = "https://github.com/posit-dev/air-pre-commit"
+rev = "0.12.0"
+hooks = [
+  { id = "air-format", files = "^r-package/geopytorch-r/", stages = ["pre-commit"] },
+]

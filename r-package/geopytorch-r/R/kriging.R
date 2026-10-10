@@ -67,10 +67,16 @@
   }
   value <- as.matrix(value)
   if (!is.numeric(value) || length(dim(value)) != 2L) {
-    stop(sprintf("%s must be a numeric matrix or data frame", name), call. = FALSE)
+    stop(
+      sprintf("%s must be a numeric matrix or data frame", name),
+      call. = FALSE
+    )
   }
   if (nrow(value) < 1L || ncol(value) < 1L) {
-    stop(sprintf("%s must have at least one row and one column", name), call. = FALSE)
+    stop(
+      sprintf("%s must have at least one row and one column", name),
+      call. = FALSE
+    )
   }
   if (!is.null(columns) && ncol(value) != columns) {
     stop(
@@ -94,7 +100,10 @@
   }
   value <- as.numeric(value)
   if (length(value) != expected_length) {
-    stop("train_x and train_y must contain the same number of rows", call. = FALSE)
+    stop(
+      "train_x and train_y must contain the same number of rows",
+      call. = FALSE
+    )
   }
   if (any(!is.finite(value))) {
     stop("train_y must contain only finite values", call. = FALSE)
@@ -127,7 +136,9 @@
   if (identical(device, "auto")) {
     if (.geopytorch_cuda_available(torch)) {
       device <- "cuda:0"
-    } else if (identical(dtype, "float32") && .geopytorch_mps_available(torch)) {
+    } else if (
+      identical(dtype, "float32") && .geopytorch_mps_available(torch)
+    ) {
       device <- "mps"
     } else {
       device <- "cpu"
@@ -160,7 +171,11 @@
     count <- as.integer(.geopytorch_python_scalar(torch$cuda$device_count()))
     if (index >= count) {
       stop(
-        sprintf("device %s was requested, but only %d CUDA devices are visible", device, count),
+        sprintf(
+          "device %s was requested, but only %d CUDA devices are visible",
+          device,
+          count
+        ),
         call. = FALSE
       )
     }
@@ -489,10 +504,16 @@ print.geopytorch_prediction <- function(x, ...) {
 kriging_weights <- function(object, newdata, newcoords = NULL) {
   if (inherits(object, "geopytorch_spatial_linear_model")) {
     inputs <- .geopytorch_regression_inputs(object, newdata, newcoords)
-    return(.geopytorch_tensor_to_r(object$model$weights(inputs$coords, inputs$design)))
+    return(.geopytorch_tensor_to_r(object$model$weights(
+      inputs$coords,
+      inputs$design
+    )))
   }
   if (!inherits(object, "geopytorch_ordinary_kriging")) {
-    stop("object must be returned by ordinary_kriging() or spatial_linear_model()", call. = FALSE)
+    stop(
+      "object must be returned by ordinary_kriging() or spatial_linear_model()",
+      call. = FALSE
+    )
   }
   newdata <- .geopytorch_matrix(
     newdata,
