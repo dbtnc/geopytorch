@@ -471,23 +471,28 @@ predict.geopytorch_ordinary_kriging <- function(
 
 #' @export
 print.geopytorch_prediction <- function(x, ...) {
-  cat("GeoPyTorch Ordinary-Kriging prediction\n")
+  cat("GeoPyTorch prediction\n")
   cat(sprintf("  locations: %d\n", length(x$mean)))
   cat(sprintf("  device   : %s\n", x$device))
   cat(sprintf("  dtype    : %s\n", x$dtype))
   invisible(x)
 }
 
-#' Extract Ordinary-Kriging weights
+#' Extract Kriging weights
 #'
-#' @param object A fitted object returned by ordinary_kriging().
-#' @param newdata Numeric matrix or data frame of prediction coordinates.
+#' @param object A fitted object returned by ordinary_kriging() or spatial_linear_model().
+#' @param newdata Prediction coordinates for ordinary kriging; a prediction data frame for spatial linear models.
+#' @param newcoords Optional prediction coordinate matrix for spatial linear models.
 #' @return A numeric matrix with prediction locations in rows and observations
 #'   in columns.
 #' @export
-kriging_weights <- function(object, newdata) {
+kriging_weights <- function(object, newdata, newcoords = NULL) {
+  if (inherits(object, "geopytorch_spatial_linear_model")) {
+    inputs <- .geopytorch_regression_inputs(object, newdata, newcoords)
+    return(.geopytorch_tensor_to_r(object$model$weights(inputs$coords, inputs$design)))
+  }
   if (!inherits(object, "geopytorch_ordinary_kriging")) {
-    stop("object must be returned by ordinary_kriging()", call. = FALSE)
+    stop("object must be returned by ordinary_kriging() or spatial_linear_model()", call. = FALSE)
   }
   newdata <- .geopytorch_matrix(
     newdata,

@@ -11,6 +11,7 @@ from geopytorch.covariance import (
     covariance_kernel,
 )
 from geopytorch.kriging import KrigingPrediction, OrdinaryKriging, SimpleKriging
+from geopytorch.regression import SpatialLinearModel
 
 __all__ = [
     "COVARIANCE_MODELS",
@@ -21,6 +22,7 @@ __all__ = [
     "MaternKernel",
     "OrdinaryKriging",
     "SimpleKriging",
+    "SpatialLinearModel",
     "SphericalKernel",
     "WaveKernel",
     "covariance_kernel",

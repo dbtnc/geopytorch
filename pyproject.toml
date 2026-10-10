@@ -25,3 +25,6 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
 ]
+[project.urls]
+Homepage = "https://github.com/dbtnc/geopytorch"
+Issues = "https://github.com/dbtnc/geopytorch/issues"

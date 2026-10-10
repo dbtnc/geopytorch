@@ -10,6 +10,44 @@ library(geopytorch)
 The Python module is imported lazily. Loading the R package declares the Python
 requirement but does not initialize Python.
 
+## Spatial linear model
+
+```r
+fit <- spatial_linear_model(
+  y ~ elevation + land_use,
+  data = training_data,
+  coords = c("east", "north"),
+  covariance_model = "exponential",
+  likelihood_method = "reml"
+)
+coef(fit)
+vcov(fit)
+logLik(fit)
+fit$covariance_parameters  # partial sill, phi, nugget
+fit$converged
+
+prediction <- predict(fit, prediction_data, full_covariance = TRUE)
+prediction$mean
+prediction$variance
+```
+
+The formula's terms, factor levels and contrasts are retained for prediction.
+The response may be absent from `prediction_data`. If training `coords` is a
+numeric matrix, pass a numeric `newcoords` matrix to `predict()` as well.
+Missing values, offsets and rank-deficient designs are rejected.
+
+Set `initial = c(partial_sill, phi, nugget), training_iterations = 0` to keep
+covariance parameters fixed. Otherwise they are estimated by ML or REML with
+GLS coefficient profiling and `torch.optim.LBFGS` with a strong-Wolfe line search.
+Optional `starts` accepts a list of triples. `parameter_bounds` accepts three
+lower/upper pairs in physical units.
+
+Predictions include coefficient estimation uncertainty. They target the latent
+spatial process by default; use `observation_noise = TRUE` for independently
+noisy future responses. Covariance parameter uncertainty is not included.
+`kriging_weights(fit, prediction_data)` returns universal-kriging weights.
+`logLik()` uses the fitted method.
+
 ## Ordinary Kriging
 
 CPU execution and double precision are the defaults:
