@@ -1,5 +1,11 @@
 # GeoPyTorch
 
+## R package
+
+The R interface is in `r-package/geopytorch-r`. See its
+[README](https://github.com/dbtnc/geopytorch/blob/main/r-package/geopytorch-r/README.md)
+for how to use it from R.
+
 ## Quick start
 
 ```python
@@ -7,9 +13,7 @@ import torch
 
 from geopytorch import OrdinaryKriging, SimpleKriging
 
-train_x = torch.tensor(
-    [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
-)
+train_x = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
 train_y = torch.tensor([1.2, 2.0, 0.7, 1.8])
 target_x = torch.tensor([[0.25, 0.40], [0.75, 0.60]])
 
