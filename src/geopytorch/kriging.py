@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import isfinite, log, pi
-from typing import Literal, TypeAlias
+from typing import Literal
 
 import gpytorch
 import torch
@@ -17,10 +17,10 @@ from geopytorch.covariance import (
     covariance_kernel,
 )
 
-Locations: TypeAlias = Tensor | Sequence[Sequence[float]]
-Values: TypeAlias = Tensor | Sequence[float]
-LikelihoodMethod: TypeAlias = Literal["ml", "reml"]
-OptimizerName: TypeAlias = Literal["adam", "lbfgs"]
+type Locations = Tensor | Sequence[Sequence[float]]
+type Values = Tensor | Sequence[float]
+type LikelihoodMethod = Literal["ml", "reml"]
+type OptimizerName = Literal["adam", "lbfgs"]
 
 
 @dataclass(frozen=True, slots=True)

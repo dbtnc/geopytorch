@@ -6,9 +6,9 @@ Design matrices include their own intercept column.
 
 from __future__ import annotations
 
+import warnings
 from contextlib import contextmanager
 from math import log, pi, sqrt
-import warnings
 
 import gpytorch
 import numpy as np
@@ -16,7 +16,12 @@ import torch
 from linear_operator.utils.errors import NanError, NotPSDError
 from torch import Tensor
 
-from geopytorch.covariance import COVARIANCE_MODELS, CovarianceModel, SphericalKernel, WaveKernel
+from geopytorch.covariance import (
+    COVARIANCE_MODELS,
+    CovarianceModel,
+    SphericalKernel,
+    WaveKernel,
+)
 from geopytorch.kriging import KrigingPrediction, LikelihoodMethod, Locations, Values
 
 
@@ -134,7 +139,7 @@ class SpatialLinearModel:
             dtype = torch.float64
         device = train_x.device if isinstance(train_x, Tensor) else None
         self.train_x_ = _array(train_x, "train_x", 2, dtype=dtype, device=device)
-        options = dict(dtype=dtype, device=self.train_x_.device)
+        options = {"dtype": dtype, "device": self.train_x_.device}
         self.train_y_ = _array(train_y, "train_y", 1, **options)
         self.design_matrix_ = _array(design_matrix, "design_matrix", 2, **options)
         self.n_, self.p_ = self.design_matrix_.shape
@@ -255,8 +260,10 @@ class SpatialLinearModel:
         elif self.covariance_model in ("exponential", "matern"):
             nu = .5 if self.covariance_model == "exponential" else self.matern_nu
             self._range_factor = sqrt(2*nu)
-        options = dict(active_dims=tuple(range(self.input_dimension_)),
-                       lengthscale_constraint=constraint(1, self._range_factor))
+        options = {
+            "active_dims": tuple(range(self.input_dimension_)),
+            "lengthscale_constraint": constraint(1, self._range_factor),
+        }
         if self.covariance_model == "gaussian":
             base = gpytorch.kernels.RBFKernel(**options)
         elif self.covariance_model in ("exponential", "matern"):
@@ -373,7 +380,7 @@ class SpatialLinearModel:
 
     def _prediction_inputs(self, locations, design_matrix):
         self._require_fitted()
-        options = dict(dtype=self.train_x_.dtype, device=self.train_x_.device)
+        options = {"dtype": self.train_x_.dtype, "device": self.train_x_.device}
         coords = _array(locations, "locations", 2, **options)
         X = _array(design_matrix, "design_matrix", 2, **options)
         if coords.shape[1] != self.input_dimension_ or X.shape != (len(coords), self.p_):

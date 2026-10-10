@@ -6,13 +6,13 @@
 from __future__ import annotations
 
 from math import pi
-from typing import Literal, TypeAlias
+from typing import Literal
 
 import gpytorch
 import torch
 from torch import Tensor
 
-CovarianceModel: TypeAlias = Literal[
+type CovarianceModel = Literal[
     "gaussian", "exponential", "matern", "spherical", "wave"
 ]
 COVARIANCE_MODELS: tuple[CovarianceModel, ...] = (
