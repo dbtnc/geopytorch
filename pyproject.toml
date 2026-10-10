@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-    { name = "dbtnc", email = "203029199+dbtnc@users.noreply.github.com" }
+    { name = "Daniel Tinoco", email = "dbtnc.ps2@gmail.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [

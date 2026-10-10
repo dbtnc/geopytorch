@@ -6,7 +6,7 @@ Authors@R: person(
     given = "Daniel",
     family = "Tinoco",
     role = c("aut", "cre"),
-    email = "203029199+dbtnc@users.noreply.github.com"
+    email = "dbtnc.ps2@gmail.com"
   )
 Description: Provides an R interface to the GeoPyTorch Python package through
     'reticulate', with a set of convenient helper functions.
