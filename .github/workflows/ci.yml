@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Stop older runs on the same branch when new commits arrive.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: Lint Python code
+        run: uv run --locked --only-dev ruff check
+      - name: Check R code formatting
+        run: uv run --locked --only-dev air format --check r-package/geopytorch-r
+
+  python:
+    name: Python ${{ matrix.python-version }} tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+        # One Python version per macOS runner keeps the costly macOS minutes low.
+        include:
+          - os: macos-latest
+            python-version: "3.12"
+          # macos-15-intel covers the older torch and numpy pinned for Intel Macs,
+          # which only work up to Python 3.12.
+          - os: macos-15-intel
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python-version }}
+          # The torch wheels are large, so a cache saves little time.
+          enable-cache: false
+      - name: Install the project from uv.lock
+        run: uv sync --locked
+      - name: Run tests
+        run: uv run --locked pytest
+
+  python-latest:
+    name: Python tests (newest Python and dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      # Ignore uv.lock and install the newest releases, as a user would.
+      - name: Run tests
+        run: uv run --isolated --no-project --with-editable . --with pytest pytest
+
+  python-lowest:
+    name: Python tests (lowest allowed versions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: false
+      # Use the oldest versions that pyproject.toml allows for our own
+      # dependencies, to check that the lower bounds still work.
+      - name: Install the lowest allowed versions
+        run: uv sync --resolution lowest-direct
+      - name: Run tests
+        run: uv run --no-sync pytest
+
+  r-package:
+    name: R package check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Run the R package against this checkout of the Python package.
+      GEOPYTORCH_LIVE_CHECKOUT: ${{ github.workspace }}
+      GEOPYTORCH_PYTHON_REQUIREMENT: geopytorch@${{ github.workspace }}
+      RETICULATE_PYTHON: ${{ github.workspace }}/.venv/bin/python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: false
+      - name: Install the Python package from uv.lock
+        run: uv sync --locked --no-dev
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          working-directory: r-package/geopytorch-r
+          extra-packages: any::rcmdcheck
+      - uses: r-lib/actions/check-r-package@v2
+        with:
+          working-directory: r-package/geopytorch-r
