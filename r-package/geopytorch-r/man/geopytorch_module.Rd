@@ -11,3 +11,12 @@ A delayed Python module proxy.
 Returns the module proxy created during package loading. Retrieving the proxy
 does not initialize Python; accessing one of its attributes does.
 }
+\examples{
+# Getting the module does not start Python.
+module <- geopytorch_module()
+
+\dontrun{
+# Using one of its attributes does.
+module$COVARIANCE_MODELS
+}
+}

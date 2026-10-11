@@ -33,3 +33,21 @@ A geopytorch_prediction object. Uncertainty includes estimation of
 \description{
 Predict from a spatial linear model
 }
+\examples{
+\dontrun{
+# Needs 'Python'; on first use 'reticulate' installs GeoPyTorch and PyTorch.
+set.seed(1)
+data <- data.frame(east = runif(30), north = runif(30), z = rnorm(30))
+data$y <- 1 + 0.5 * data$z + rnorm(30)
+fit <- spatial_linear_model(
+  y ~ z,
+  data = data,
+  coords = c("east", "north"),
+  covariance_model = "exponential"
+)
+newdata <- data.frame(east = c(0.2, 0.8), north = c(0.3, 0.7), z = c(0, 1))
+prediction <- predict(fit, newdata)
+prediction$mean
+prediction$variance
+}
+}

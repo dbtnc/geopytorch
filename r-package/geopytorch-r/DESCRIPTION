@@ -1,16 +1,22 @@
 Package: geopytorch
 Type: Package
-Title: R Interface to GeoPyTorch
-Version: 0.0.0.9000
+Title: R Interface to 'GeoPyTorch'
+Version: 0.1.0
 Authors@R: person(
     given = "Daniel",
     family = "Tinoco",
     role = c("aut", "cre"),
     email = "dbtnc.ps2@gmail.com"
   )
-Description: Provides an R interface to the GeoPyTorch Python package through
-    'reticulate', with a set of convenient helper functions.
+Description: Fits ordinary kriging and spatial linear models through
+    'reticulate' with the 'GeoPyTorch' 'Python' package, which is built on
+    'GPyTorch' and 'PyTorch'. Covariance parameters can be fixed or estimated
+    by maximum likelihood or restricted maximum likelihood, and predictions
+    include their variances. 'Python' and the required packages are installed
+    on first use by 'reticulate'.
 License: MIT + file LICENSE
+URL: https://github.com/dbtnc/geopytorch
+BugReports: https://github.com/dbtnc/geopytorch/issues
 Encoding: UTF-8
 Depends:
     R (>= 4.1.0)

@@ -15,3 +15,6 @@ Set \env{GEOPYTORCH_PYTHON_REQUIREMENT} before loading the package to use a
 local checkout, for example
 \code{geopytorch@/absolute/path/to/geopytorch}.
 }
+\examples{
+geopytorch_requirement()
+}

@@ -11,3 +11,9 @@ An object of class \code{geopytorch_config}.
 Initializes Python, imports the selected GeoPyTorch module, and reports the
 selected requirement, module source, and dependency versions.
 }
+\examples{
+\dontrun{
+# Needs 'Python'; on first use 'reticulate' installs GeoPyTorch and PyTorch.
+geopytorch_config()
+}
+}

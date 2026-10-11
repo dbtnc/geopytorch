@@ -21,3 +21,10 @@ Initializes Python and inspects or validates devices in the selected PyTorch
 runtime. CPU is always available. Automatic selection prefers CUDA, then MPS
 for single precision, then CPU.
 }
+\examples{
+\dontrun{
+# Needs 'Python'; on first use 'reticulate' installs GeoPyTorch and PyTorch.
+geopytorch_devices()
+geopytorch_device("cpu")
+}
+}

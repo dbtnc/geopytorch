@@ -68,3 +68,19 @@ The range phi gives exponential correlation exp(-h/phi), Gaussian
   supported when covariance parameters are fixed. logLik() uses the fitted
   likelihood method; REML omits the design-only term 0.5 * log(det(t(X) \%*\% X)).
 }
+\examples{
+\dontrun{
+# Needs 'Python'; on first use 'reticulate' installs GeoPyTorch and PyTorch.
+set.seed(1)
+data <- data.frame(east = runif(30), north = runif(30), z = rnorm(30))
+data$y <- 1 + 0.5 * data$z + rnorm(30)
+fit <- spatial_linear_model(
+  y ~ z,
+  data = data,
+  coords = c("east", "north"),
+  covariance_model = "exponential"
+)
+coef(fit)
+fit$covariance_parameters
+}
+}
