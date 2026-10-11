@@ -1,10 +1,33 @@
 # GeoPyTorch
 
+[![CI](https://github.com/dbtnc/geopytorch/actions/workflows/ci.yml/badge.svg)](https://github.com/dbtnc/geopytorch/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+[![Python Version](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![PyPI](https://img.shields.io/pypi/v/geopytorch.svg)](https://pypi.org/project/geopytorch)
+
+
 ## R package
 
 The R interface is in `r-package/geopytorch-r`. See its
 [README](https://github.com/dbtnc/geopytorch/blob/main/r-package/geopytorch-r/README.md)
 for how to use it from R.
+
+## Installation
+
+```sh
+pip install geopytorch
+```
+
+or, in a uv project:
+
+```sh
+uv add geopytorch
+```
+
+GeoPyTorch needs Python 3.12 or later. On Intel Macs, use Python 3.12 (with
+uv, create the project with `uv init --python 3.12`): the last PyTorch release
+for Intel Macs does not support newer versions.
 
 ## Quick start
 
