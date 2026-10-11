@@ -12,9 +12,7 @@ import gpytorch
 import torch
 from torch import Tensor
 
-type CovarianceModel = Literal[
-    "gaussian", "exponential", "matern", "spherical", "wave"
-]
+type CovarianceModel = Literal["gaussian", "exponential", "matern", "spherical", "wave"]
 COVARIANCE_MODELS: tuple[CovarianceModel, ...] = (
     "gaussian",
     "exponential",
@@ -114,9 +112,7 @@ class SphericalKernel(DistanceKernel):
         _require_at_most_three_dimensions(x1, "SphericalKernel")
         distance = self._scaled_distance(x1, x2, diag=diag, **params)
         within_range = 1.0 - 1.5 * distance + 0.5 * distance.pow(3)
-        return torch.where(
-            distance < 1.0, within_range, torch.zeros_like(distance)
-        )
+        return torch.where(distance < 1.0, within_range, torch.zeros_like(distance))
 
 
 class WaveKernel(DistanceKernel):

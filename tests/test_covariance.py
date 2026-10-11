@@ -75,12 +75,12 @@ def test_covariance_values_match_geor_1_9_6(
         dtype=torch.float64
     )
     kernel.initialize(outputscale=torch.tensor(1.7, dtype=torch.float64))
-    kernel.base_kernel.initialize(
-        lengthscale=torch.tensor(0.75, dtype=torch.float64)
+    kernel.base_kernel.initialize(lengthscale=torch.tensor(0.75, dtype=torch.float64))
+    actual = (
+        kernel(DISTANCES.unsqueeze(-1), torch.zeros(1, 1, dtype=torch.float64))
+        .to_dense()
+        .squeeze()
     )
-    actual = kernel(
-        DISTANCES.unsqueeze(-1), torch.zeros(1, 1, dtype=torch.float64)
-    ).to_dense().squeeze()
     expected = torch.tensor(
         GEOR_REFERENCES[(covariance_model, matern_nu)], dtype=torch.float64
     )

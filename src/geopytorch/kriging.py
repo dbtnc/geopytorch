@@ -149,9 +149,7 @@ class _BaseKriging:
         kernel = self._make_kernel(locations, targets)
         likelihood = self._make_likelihood(locations, targets)
         mean_module = self._make_mean_module(locations, targets)
-        model = _ExactKrigingGP(
-            locations, targets, likelihood, mean_module, kernel
-        )
+        model = _ExactKrigingGP(locations, targets, likelihood, mean_module, kernel)
 
         self.train_x_ = locations
         self.train_y_ = targets
@@ -253,9 +251,7 @@ class _BaseKriging:
             self.covariance_model,
             matern_nu=self.matern_nu,
             ard_num_dims=ard_num_dims,
-        ).to(
-            device=train_x.device, dtype=train_x.dtype
-        )
+        ).to(device=train_x.device, dtype=train_x.dtype)
         base_kernel = kernel.base_kernel
 
         target_variance = train_y.var(unbiased=False).clamp_min(1e-3)
@@ -274,7 +270,9 @@ class _BaseKriging:
         self, train_x: Tensor, train_y: Tensor
     ) -> gpytorch.likelihoods.GaussianLikelihood:
         if self._likelihood_template is not None:
-            return self._likelihood_template.to(device=train_x.device, dtype=train_x.dtype)
+            return self._likelihood_template.to(
+                device=train_x.device, dtype=train_x.dtype
+            )
 
         likelihood = gpytorch.likelihoods.GaussianLikelihood().to(
             device=train_x.device, dtype=train_x.dtype
@@ -294,9 +292,7 @@ class _BaseKriging:
             cholesky = _stable_cholesky(train_covariance)
 
             cross_covariance = self.kernel_(self.train_x_, target_x).to_dense()
-            solved_cross_covariance = torch.cholesky_solve(
-                cross_covariance, cholesky
-            )
+            solved_cross_covariance = torch.cholesky_solve(cross_covariance, cholesky)
             target_covariance = self.kernel_(target_x).to_dense()
         return (
             target_x,
@@ -495,9 +491,7 @@ class OrdinaryKriging(_BaseKriging):
             cholesky = _stable_cholesky(train_covariance)
             ones = self.train_y_.new_ones((self.train_y_.shape[0], 1))
             solved_ones = torch.cholesky_solve(ones, cholesky)
-            solved_targets = torch.cholesky_solve(
-                self.train_y_.unsqueeze(-1), cholesky
-            )
+            solved_targets = torch.cholesky_solve(self.train_y_.unsqueeze(-1), cholesky)
             return ((ones.mT @ solved_targets) / (ones.mT @ solved_ones)).squeeze()
 
     def weights(self, locations: Locations) -> Tensor:
@@ -567,11 +561,17 @@ def _stable_cholesky(matrix: Tensor) -> Tensor:
         return torch.linalg.cholesky(matrix)
     except RuntimeError as original_error:
         diagonal_scale = matrix.diagonal().abs().mean().clamp_min(1.0)
-        base_jitter = (1e-6 if matrix.dtype == torch.float32 else 1e-10) * diagonal_scale
+        base_jitter = (
+            1e-6 if matrix.dtype == torch.float32 else 1e-10
+        ) * diagonal_scale
         identity = torch.eye(matrix.shape[-1], dtype=matrix.dtype, device=matrix.device)
         for multiplier in (1.0, 10.0, 100.0, 1000.0):
             try:
-                return torch.linalg.cholesky(matrix + multiplier * base_jitter * identity)
+                return torch.linalg.cholesky(
+                    matrix + multiplier * base_jitter * identity
+                )
             except RuntimeError:
                 continue
-        raise RuntimeError("Kriging covariance matrix is not positive definite") from original_error
+        raise RuntimeError(
+            "Kriging covariance matrix is not positive definite"
+        ) from original_error

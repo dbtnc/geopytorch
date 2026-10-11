@@ -17,7 +17,7 @@ regression_fixture <- function(
     !nzchar(Sys.getenv("GEOPYTORCH_LIVE_CHECKOUT")),
     "no live checkout was requested"
   )
-  spatial_linear_model(
+  splm(
     formula,
     regression_data(),
     coords,
@@ -39,7 +39,7 @@ test_that("formula regression preserves design, factor levels and uncertainty", 
     observation_noise = TRUE,
     full_covariance = TRUE
   )
-  expect_s3_class(fit, "geopytorch_spatial_linear_model")
+  expect_s3_class(fit, "geopytorch_splm")
   expect_identical(names(coef(fit)), c("(Intercept)", "z", "groupb"))
   expect_equal(dim(vcov(fit)), c(3L, 3L))
   expect_equal(
@@ -98,16 +98,16 @@ test_that("regression rejects invalid training designs", {
   d <- regression_data()
   d$duplicate <- d$z
   expect_error(
-    spatial_linear_model(y ~ z + duplicate, d, c("s1", "s2")),
+    splm(y ~ z + duplicate, d, c("s1", "s2")),
     "full column rank"
   )
   expect_error(
-    spatial_linear_model(y ~ z + offset(z), d, c("s1", "s2")),
+    splm(y ~ z + offset(z), d, c("s1", "s2")),
     "offsets"
   )
-  expect_error(spatial_linear_model(y ~ z, d, "absent"), "coordinate columns")
+  expect_error(splm(y ~ z, d, "absent"), "coordinate columns")
   d$y[1] <- NA_real_
-  expect_error(spatial_linear_model(y ~ z, d, c("s1", "s2")), "missing")
+  expect_error(splm(y ~ z, d, c("s1", "s2")), "missing")
 })
 
 test_that("bounded LBFGS fits expose diagnostics through reticulate", {
@@ -116,7 +116,7 @@ test_that("bounded LBFGS fits expose diagnostics through reticulate", {
     "no live checkout was requested"
   )
   d <- data.frame(s1 = seq_len(8), y = rep(c(-3, 3), 4))
-  fit <- spatial_linear_model(
+  fit <- splm(
     y ~ 1,
     d,
     "s1",

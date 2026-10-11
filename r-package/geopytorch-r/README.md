@@ -13,7 +13,7 @@ requirement but does not initialize Python.
 ## Spatial linear model
 
 ```r
-fit <- spatial_linear_model(
+fit <- splm(
   y ~ elevation + land_use,
   data = training_data,
   coords = c("east", "north"),
@@ -47,6 +47,19 @@ spatial process by default; use `observation_noise = TRUE` for independently
 noisy future responses. Covariance parameter uncertainty is not included.
 `kriging_weights(fit, prediction_data)` returns universal-kriging weights.
 `logLik()` uses the fitted method.
+
+## Spatial generalized linear model
+
+```r
+fit <- spglm(
+  count ~ elevation + offset(log(exposure)), family = "poisson",
+  data = training_data, coords = c("east", "north")
+)
+predict(fit, prediction_data)$mean
+```
+
+The families are `poisson`, `nbinomial`, `binomial`, `beta`, `Gamma`, and
+`inverse.gaussian`. See `?spglm` for response formats and prediction uncertainty.
 
 ## Ordinary Kriging
 

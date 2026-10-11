@@ -495,14 +495,14 @@ print.geopytorch_prediction <- function(x, ...) {
 
 #' Extract Kriging weights
 #'
-#' @param object A fitted object returned by ordinary_kriging() or spatial_linear_model().
+#' @param object A fitted object returned by ordinary_kriging(), splm(), or spglm().
 #' @param newdata Prediction coordinates for ordinary kriging; a prediction data frame for spatial linear models.
 #' @param newcoords Optional prediction coordinate matrix for spatial linear models.
 #' @return A numeric matrix with prediction locations in rows and observations
-#'   in columns.
+#'   in columns. For spglm(), weights act on the offset-free fitted latent mode.
 #' @export
 kriging_weights <- function(object, newdata, newcoords = NULL) {
-  if (inherits(object, "geopytorch_spatial_linear_model")) {
+  if (inherits(object, c("geopytorch_splm", "geopytorch_spglm"))) {
     inputs <- .geopytorch_regression_inputs(object, newdata, newcoords)
     return(.geopytorch_tensor_to_r(object$model$weights(
       inputs$coords,
@@ -511,7 +511,7 @@ kriging_weights <- function(object, newdata, newcoords = NULL) {
   }
   if (!inherits(object, "geopytorch_ordinary_kriging")) {
     stop(
-      "object must be returned by ordinary_kriging() or spatial_linear_model()",
+      "object must be returned by ordinary_kriging(), splm(), or spglm()",
       call. = FALSE
     )
   }

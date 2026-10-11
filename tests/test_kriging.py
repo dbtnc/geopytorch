@@ -44,14 +44,10 @@ def test_observation_prediction_adds_only_nugget_to_diagonal() -> None:
     kriging.fit(train_x, train_y, training_iterations=0)
 
     latent = kriging.predict([[0.2, 0.3], [0.6, 0.8]])
-    observed = kriging.predict(
-        [[0.2, 0.3], [0.6, 0.8]], observation_noise=True
-    )
+    observed = kriging.predict([[0.2, 0.3], [0.6, 0.8]], observation_noise=True)
     difference = observed.covariance_matrix - latent.covariance_matrix
 
-    assert difference.diagonal().tolist() == pytest.approx(
-        [1e-3, 1e-3], abs=2e-8
-    )
+    assert difference.diagonal().tolist() == pytest.approx([1e-3, 1e-3], abs=2e-8)
     assert difference[0, 1].item() == pytest.approx(0.0, abs=1e-7)
 
 
@@ -106,7 +102,10 @@ def test_ordinary_variance_matches_augmented_kriging_system() -> None:
         [
             torch.cat([train_covariance, torch.ones(4, 1, dtype=torch.float64)], dim=1),
             torch.cat(
-                [torch.ones(1, 4, dtype=torch.float64), torch.zeros(1, 1, dtype=torch.float64)],
+                [
+                    torch.ones(1, 4, dtype=torch.float64),
+                    torch.zeros(1, 1, dtype=torch.float64),
+                ],
                 dim=1,
             ),
         ],
@@ -151,9 +150,7 @@ def test_same_api_accepts_3d_locations(model_kind: str) -> None:
 
 
 def test_optional_gpytorch_training_records_losses() -> None:
-    train_x = torch.tensor(
-        [[0.0, 0.0], [0.3, 0.2], [0.8, 0.7], [1.0, 1.0]]
-    )
+    train_x = torch.tensor([[0.0, 0.0], [0.3, 0.2], [0.8, 0.7], [1.0, 1.0]])
     train_y = torch.tensor([0.0, 0.4, 0.9, 1.1])
     model = OrdinaryKriging(ard=True).fit(
         train_x, train_y, training_iterations=2, learning_rate=0.05

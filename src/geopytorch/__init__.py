@@ -10,11 +10,14 @@ from geopytorch.covariance import (
     WaveKernel,
     covariance_kernel,
 )
+from geopytorch.generalized import SpatialGeneralizedLinearModel
 from geopytorch.kriging import KrigingPrediction, OrdinaryKriging, SimpleKriging
+from geopytorch.likelihoods import GLM_FAMILIES, SpatialGLMLikelihood
 from geopytorch.regression import SpatialLinearModel
 
 __all__ = [
     "COVARIANCE_MODELS",
+    "GLM_FAMILIES",
     "CovarianceModel",
     "ExponentialKernel",
     "GaussianKernel",
@@ -22,6 +25,8 @@ __all__ = [
     "MaternKernel",
     "OrdinaryKriging",
     "SimpleKriging",
+    "SpatialGLMLikelihood",
+    "SpatialGeneralizedLinearModel",
     "SpatialLinearModel",
     "SphericalKernel",
     "WaveKernel",

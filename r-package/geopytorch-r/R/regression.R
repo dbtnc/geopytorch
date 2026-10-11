@@ -20,7 +20,7 @@
 #'   Zero lower bounds allow parameters to approach zero. Python's default is unbounded.
 #' @param device PyTorch device, default cpu.
 #' @param dtype float64 (default) or float32.
-#' @return A geopytorch_spatial_linear_model object with coefficients, their
+#' @return A geopytorch_splm object with coefficients, their
 #'   covariance, covariance parameters, likelihoods, optimizer diagnostics, and
 #'   the retained Python model. Factor levels and contrasts are retained for prediction.
 #' @details The range phi gives exponential correlation exp(-h/phi), Gaussian
@@ -32,7 +32,7 @@
 #'   supported when covariance parameters are fixed. logLik() uses the fitted
 #'   likelihood method; REML omits the design-only term 0.5 * log(det(t(X) %*% X)).
 #' @export
-spatial_linear_model <- function(
+splm <- function(
   formula,
   data,
   coords,
@@ -153,7 +153,7 @@ spatial_linear_model <- function(
       device = device,
       dtype = dtype
     ),
-    class = "geopytorch_spatial_linear_model"
+    class = "geopytorch_splm"
   )
 }
 
@@ -207,11 +207,19 @@ spatial_linear_model <- function(
       torch
     )
   }
-  list(coords = tensor(newcoords), design = tensor(X))
+  list(
+    coords = tensor(newcoords),
+    design = tensor(X),
+    offset = if (is.null(stats::model.offset(frame))) {
+      NULL
+    } else {
+      tensor(stats::model.offset(frame))
+    }
+  )
 }
 
 #' Predict from a spatial linear model
-#' @param object An object returned by spatial_linear_model().
+#' @param object An object returned by splm().
 #' @param newdata A data frame containing prediction covariates and coordinate columns.
 #' @param newcoords Optional coordinate matrix; required if coords was a matrix during fitting.
 #' @param observation_noise Include independent future nugget variance.
@@ -220,7 +228,7 @@ spatial_linear_model <- function(
 #' @return A geopytorch_prediction object. Uncertainty includes estimation of
 #'   regression coefficients but not estimation of covariance parameters.
 #' @export
-predict.geopytorch_spatial_linear_model <- function(
+predict.geopytorch_splm <- function(
   object,
   newdata,
   newcoords = NULL,
@@ -256,15 +264,15 @@ predict.geopytorch_spatial_linear_model <- function(
 }
 
 #' @export
-coef.geopytorch_spatial_linear_model <- function(object, ...) {
+coef.geopytorch_splm <- function(object, ...) {
   object$coefficients
 }
 
 #' @export
-vcov.geopytorch_spatial_linear_model <- function(object, ...) object$vcov
+vcov.geopytorch_splm <- function(object, ...) object$vcov
 
 #' @export
-logLik.geopytorch_spatial_linear_model <- function(object, ...) {
+logLik.geopytorch_splm <- function(object, ...) {
   reml <- identical(object$likelihood_method, "reml")
   value <- if (reml) object$restricted_log_likelihood else object$log_likelihood
   # ML counts p estimated coefficients plus estimated covariance parameters;
@@ -280,7 +288,7 @@ logLik.geopytorch_spatial_linear_model <- function(object, ...) {
 }
 
 #' @export
-print.geopytorch_spatial_linear_model <- function(x, ...) {
+print.geopytorch_splm <- function(x, ...) {
   cat("GeoPyTorch spatial linear model\n")
   cat(sprintf(
     "  observations: %d; coefficients: %d; method: %s\n",

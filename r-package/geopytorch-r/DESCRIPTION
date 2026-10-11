@@ -8,9 +8,8 @@ Authors@R: person(
     role = c("aut", "cre"),
     email = "dbtnc.ps2@gmail.com"
   )
-Description: Fits ordinary kriging and spatial linear models through
-    'reticulate' with the 'GeoPyTorch' 'Python' package, which is built on
-    'GPyTorch' and 'PyTorch'. Covariance parameters can be fixed or estimated
+Description: Spatial models built on 'GPyTorch' and 'PyTorch'.
+    Covariance parameters can be fixed or estimated
     by maximum likelihood or restricted maximum likelihood, and predictions
     include their variances. 'Python' and the required packages are installed
     on first use by 'reticulate'.

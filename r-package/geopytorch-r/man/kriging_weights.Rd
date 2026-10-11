@@ -5,12 +5,13 @@
 kriging_weights(object, newdata, newcoords = NULL)
 }
 \arguments{
-  \item{object}{A fitted object returned by \code{ordinary_kriging()} or \code{spatial_linear_model()}.}
+  \item{object}{A fitted object returned by \code{ordinary_kriging()}, \code{splm()}, or \code{spglm()}.}
   \item{newdata}{Prediction coordinates for ordinary kriging, or a prediction data frame for spatial linear models.}
   \item{newcoords}{Optional prediction coordinate matrix for spatial linear models.}
 }
 \value{
 A numeric matrix with prediction locations in rows and observations in columns.
+For \code{spglm()}, weights act on the offset-free fitted latent mode.
 }
 \description{
 Computes ordinary- or universal-kriging weights. With a regression design matrix,
