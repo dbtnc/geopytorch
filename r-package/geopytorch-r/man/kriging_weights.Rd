@@ -11,7 +11,8 @@ kriging_weights(object, newdata, newcoords = NULL)
 }
 \value{
 A numeric matrix with prediction locations in rows and observations in columns.
-For \code{spglm()}, weights act on the offset-free fitted latent mode.
+For \code{spglm()}, weights act on the offset-free fitted latent mode and
+exist only for REML fits, whose coefficients are linear in that mode.
 }
 \description{
 Computes ordinary- or universal-kriging weights. With a regression design matrix,

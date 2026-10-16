@@ -58,8 +58,10 @@ fit <- spglm(
 predict(fit, prediction_data)$mean
 ```
 
-The families are `poisson`, `nbinomial`, `binomial`, `beta`, `Gamma`, and
-`inverse.gaussian`. See `?spglm` for response formats and prediction uncertainty.
+The families are `poisson`, `nbinomial`, `binomial`, `beta`, `Gamma`,
+`inverse.gaussian`, and `tweedie`. Tweedie supports zeros and positive values;
+its power is estimated by default. Set `power = 1.5, estimate_power = FALSE`
+to fix it. See `?spglm` for response formats and prediction uncertainty.
 
 ## Ordinary Kriging
 

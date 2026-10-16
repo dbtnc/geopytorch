@@ -1,14 +1,14 @@
 #' Fit a spatial generalized linear model
 #'
 #' Fits a regression with Gaussian spatial effects on the link scale. Covariance
-#' and dispersion parameters are estimated with a dense profile Laplace objective.
-#' All observations are used together. The spatial nugget is distinct from
+#' and dispersion parameters maximize a dense Laplace approximation to the ML or
+#' REML criterion. All observations are used together. The spatial nugget is distinct from
 #' conditional response variation.
 #'
 #' @param formula Regression formula, optionally including offset(). A binomial
 #'   response can be binary, a two-level factor, success counts with trials, or
 #'   cbind(successes, failures).
-#' @param family One of poisson, nbinomial, binomial, beta, Gamma, inverse.gaussian.
+#' @param family One of poisson, nbinomial, binomial, beta, Gamma, inverse.gaussian, tweedie.
 #' @param data A data frame containing the response and covariates.
 #' @param coords Coordinate column names or a numeric coordinate matrix.
 #' @param covariance_model Spatial covariance model, as in splm().
@@ -16,15 +16,24 @@
 #' @param initial Initial or fixed c(partial_sill, phi, nugget).
 #' @param dispersion Positive response dispersion, initially one.
 #' @param estimate_dispersion Estimate dispersion when the family permits it.
+#' @param power Initial or fixed Tweedie power, default 1.5.
+#' @param estimate_power Estimate Tweedie power, default TRUE. Ignored for other families.
+#' @param power_bounds Lower and upper bounds when estimating Tweedie power,
+#'   default c(1.1, 1.999). Fixed power can be anywhere strictly between 1 and 2.
+#' @param max_series_terms Maximum number of terms in the adaptive Tweedie density
+#'   series. Failure to meet its tail tolerance reports a numerical failure.
 #' @param fixed Three logical values specifying fixed covariance parameters.
 #' @param trials Positive integer totals for a binomial count response.
-#' @param likelihood_method reml (default) or ml.
+#' @param likelihood_method reml (default) or ml, using the Laplace criteria below.
 #' @param training_iterations Maximum outer optimizer iterations. Zero fixes
-#'   covariance and dispersion while still fitting the latent mode and coefficients.
+#'   covariance, dispersion, and power while still fitting the latent mode and coefficients.
 #' @param starts Optional list of initial covariance triples. Fixed entries must agree.
 #' @param parameter_bounds Bounds for the three covariance parameters, as in splm().
-#' @param mode_iterations Maximum Newton iterations for each latent mode solve.
-#' @param mode_tolerance Positive score tolerance, or NULL for a precision-dependent default.
+#' @param mode_iterations Maximum Newton iterations for each latent mode solve
+#'   and, with ml, for the coefficient solve.
+#' @param mode_tolerance Positive latent score tolerance, or NULL for a
+#'   precision-dependent default. With ml, the coefficient solve stops when its
+#'   squared Newton decrement is below the squared tolerance.
 #' @param device PyTorch device, default cpu.
 #' @param dtype float64 (default) or float32.
 #' @return A geopytorch_spglm object supporting coef(), vcov(), fitted(),
@@ -33,10 +42,21 @@
 #'   Dispersion is fixed at one for Poisson and binomial. Otherwise it denotes
 #'   negative-binomial size, beta precision, Gamma shape, or inverse-Gaussian
 #'   shape divided by the mean. Thus inverse-Gaussian variance is mu^2/dispersion.
+#'   Tweedie responses may be zero or positive continuous values. Their mean is
+#'   exp(eta) and variance is dispersion * mean^power, with 1 < power < 2.
+#'   Tweedie density calculations and derivatives use PyTorch on the selected device.
+#'   Responses with no finite coefficient estimate are rejected, for example
+#'   all-zero counts with an intercept or binomial outcomes separated by the design.
 #'   Covariance conventions match splm(). Missing values and deficient designs
-#'   are rejected. Computation is dense. The profile Laplace objective retains
-#'   the Gaussian normalizing constant; see the Python class documentation for
-#'   its definition. This is not the likelihood returned by an ordinary glm().
+#'   are rejected. Computation is dense. The ml criterion is the marginal Laplace
+#'   log likelihood: the latent predictor is integrated at fixed coefficients,
+#'   which then maximize it, and vcov() is its inverse negative Hessian in the
+#'   coefficients. The reml criterion is a joint Laplace integral over the
+#'   predictor and coefficients, minus n * log(2*pi) / 2; its coefficients are
+#'   joint modes. logLik() reports the criterion of the fitted method. See the
+#'   Python class documentation for the formulas. These approximate criteria
+#'   would be exact for a Gaussian response, but they are not ordinary glm()
+#'   log likelihoods.
 #' @export
 spglm <- function(
   formula,
@@ -63,11 +83,23 @@ spglm <- function(
   mode_iterations = 100L,
   mode_tolerance = NULL,
   device = "cpu",
-  dtype = c("float64", "float32")
+  dtype = c("float64", "float32"),
+  power = 1.5,
+  estimate_power = TRUE,
+  power_bounds = c(1.1, 1.999),
+  max_series_terms = 16385L
 ) {
   family <- match.arg(
     family,
-    c("poisson", "nbinomial", "binomial", "beta", "Gamma", "inverse.gaussian")
+    c(
+      "poisson",
+      "nbinomial",
+      "binomial",
+      "beta",
+      "Gamma",
+      "inverse.gaussian",
+      "tweedie"
+    )
   )
   covariance_model <- match.arg(covariance_model)
   likelihood_method <- match.arg(likelihood_method)
@@ -96,6 +128,11 @@ spglm <- function(
   ) {
     stop("fixed must contain three logical values", call. = FALSE)
   }
+  estimate_power <- .geopytorch_flag(estimate_power, "estimate_power")
+  max_series_terms <- .geopytorch_nonnegative_integer(
+    max_series_terms,
+    "max_series_terms"
+  )
   coords_names <- if (is.character(coords)) coords else NULL
   if (!is.null(coords_names)) {
     if (
@@ -179,7 +216,11 @@ spglm <- function(
     starts = starts,
     parameter_bounds = parameter_bounds,
     mode_iterations = mode_iterations,
-    mode_tolerance = mode_tolerance
+    mode_tolerance = mode_tolerance,
+    power = power,
+    estimate_power = estimate_power,
+    power_bounds = as.list(power_bounds),
+    max_series_terms = max_series_terms
   )
   coefficients <- setNames(
     as.numeric(.geopytorch_tensor_to_r(model$coef_)),
@@ -199,6 +240,8 @@ spglm <- function(
         c("partial_sill", "phi", "nugget")
       ),
       dispersion = scalar(model$dispersion_),
+      power = if (family == "tweedie") scalar(model$power_) else NULL,
+      power_estimated = reticulate::py_to_r(model$power_estimated_),
       family = family,
       log_likelihood = scalar(model$log_likelihood_),
       restricted_log_likelihood = scalar(model$restricted_log_likelihood_),
@@ -328,6 +371,7 @@ logLik.geopytorch_spglm <- function(object, ...) {
   value <- if (reml) object$restricted_log_likelihood else object$log_likelihood
   df <- object$covariance_estimated +
     as.integer(object$dispersion_estimated) +
+    as.integer(isTRUE(object$power_estimated)) +
     if (reml) 0L else length(coef(object))
   structure(value, class = "logLik", df = df, nobs = object$observations)
 }
@@ -348,6 +392,7 @@ summary.geopytorch_spglm <- function(object, ...) {
       ),
       covariance_parameters = object$covariance_parameters,
       dispersion = object$dispersion,
+      power = object$power,
       log_likelihood = logLik(object),
       converged = object$converged
     ),
@@ -366,6 +411,9 @@ print.geopytorch_spglm <- function(x, ...) {
   cat("Covariance parameters:\n")
   print(x$covariance_parameters)
   cat(sprintf("Dispersion: %g; converged: %s\n", x$dispersion, x$converged))
+  if (!is.null(x$power)) {
+    cat(sprintf("Tweedie power: %g\n", x$power))
+  }
   invisible(x)
 }
 
@@ -376,5 +424,8 @@ print.summary.geopytorch_spglm <- function(x, ...) {
   cat("Covariance parameters:\n")
   print(x$covariance_parameters)
   cat(sprintf("Dispersion: %g; converged: %s\n", x$dispersion, x$converged))
+  if (!is.null(x$power)) {
+    cat(sprintf("Tweedie power: %g\n", x$power))
+  }
   invisible(x)
 }

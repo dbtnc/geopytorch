@@ -499,7 +499,8 @@ print.geopytorch_prediction <- function(x, ...) {
 #' @param newdata Prediction coordinates for ordinary kriging; a prediction data frame for spatial linear models.
 #' @param newcoords Optional prediction coordinate matrix for spatial linear models.
 #' @return A numeric matrix with prediction locations in rows and observations
-#'   in columns. For spglm(), weights act on the offset-free fitted latent mode.
+#'   in columns. For spglm(), weights act on the offset-free fitted latent mode
+#'   and exist only for REML fits, whose coefficients are linear in that mode.
 #' @export
 kriging_weights <- function(object, newdata, newcoords = NULL) {
   if (inherits(object, c("geopytorch_splm", "geopytorch_spglm"))) {

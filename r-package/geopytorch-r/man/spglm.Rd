@@ -23,7 +23,11 @@ spglm(
   mode_iterations = 100L,
   mode_tolerance = NULL,
   device = "cpu",
-  dtype = c("float64", "float32")
+  dtype = c("float64", "float32"),
+  power = 1.5,
+  estimate_power = TRUE,
+  power_bounds = c(1.1, 1.999),
+  max_series_terms = 16385L
 )
 }
 \arguments{
@@ -31,7 +35,7 @@ spglm(
 response can be binary, a two-level factor, success counts with trials, or
 cbind(successes, failures).}
 
-\item{family}{One of poisson, nbinomial, binomial, beta, Gamma, inverse.gaussian.}
+\item{family}{One of poisson, nbinomial, binomial, beta, Gamma, inverse.gaussian, tweedie.}
 
 \item{data}{A data frame containing the response and covariates.}
 
@@ -51,22 +55,35 @@ cbind(successes, failures).}
 
 \item{trials}{Positive integer totals for a binomial count response.}
 
-\item{likelihood_method}{reml (default) or ml.}
+\item{likelihood_method}{reml (default) or ml, using the Laplace criteria below.}
 
 \item{training_iterations}{Maximum outer optimizer iterations. Zero fixes
-covariance and dispersion while still fitting the latent mode and coefficients.}
+covariance, dispersion, and power while still fitting the latent mode and coefficients.}
 
 \item{starts}{Optional list of initial covariance triples. Fixed entries must agree.}
 
 \item{parameter_bounds}{Bounds for the three covariance parameters, as in splm().}
 
-\item{mode_iterations}{Maximum Newton iterations for each latent mode solve.}
+\item{mode_iterations}{Maximum Newton iterations for each latent mode solve
+and, with ml, for the coefficient solve.}
 
-\item{mode_tolerance}{Positive score tolerance, or NULL for a precision-dependent default.}
+\item{mode_tolerance}{Positive latent score tolerance, or NULL for a
+precision-dependent default. With ml, the coefficient solve stops when its
+squared Newton decrement is below the squared tolerance.}
 
 \item{device}{PyTorch device, default cpu.}
 
 \item{dtype}{float64 (default) or float32.}
+
+\item{power}{Initial or fixed Tweedie power, default 1.5.}
+
+\item{estimate_power}{Estimate Tweedie power, default TRUE. Ignored for other families.}
+
+\item{power_bounds}{Lower and upper bounds when estimating Tweedie power,
+default c(1.1, 1.999). Fixed power can be anywhere strictly between 1 and 2.}
+
+\item{max_series_terms}{Maximum number of terms in the adaptive Tweedie density
+series. Failure to meet its tail tolerance reports a numerical failure.}
 }
 \value{
 A geopytorch_spglm object supporting coef(), vcov(), fitted(),
@@ -74,8 +91,8 @@ A geopytorch_spglm object supporting coef(), vcov(), fitted(),
 }
 \description{
 Fits a regression with Gaussian spatial effects on the link scale. Covariance
-and dispersion parameters are estimated with a dense profile Laplace objective.
-All observations are used together. The spatial nugget is distinct from
+and dispersion parameters maximize a dense Laplace approximation to the ML or
+REML criterion. All observations are used together. The spatial nugget is distinct from
 conditional response variation.
 }
 \details{
@@ -83,8 +100,19 @@ All families use a log link except binomial and beta, which use logit.
   Dispersion is fixed at one for Poisson and binomial. Otherwise it denotes
   negative-binomial size, beta precision, Gamma shape, or inverse-Gaussian
   shape divided by the mean. Thus inverse-Gaussian variance is mu^2/dispersion.
+  Tweedie responses may be zero or positive continuous values. Their mean is
+  exp(eta) and variance is dispersion * mean^power, with 1 < power < 2.
+  Tweedie density calculations and derivatives use PyTorch on the selected device.
+  Responses with no finite coefficient estimate are rejected, for example
+  all-zero counts with an intercept or binomial outcomes separated by the design.
   Covariance conventions match splm(). Missing values and deficient designs
-  are rejected. Computation is dense. The profile Laplace objective retains
-  the Gaussian normalizing constant; see the Python class documentation for
-  its definition. This is not the likelihood returned by an ordinary glm().
+  are rejected. Computation is dense. The ml criterion is the marginal Laplace
+  log likelihood: the latent predictor is integrated at fixed coefficients,
+  which then maximize it, and vcov() is its inverse negative Hessian in the
+  coefficients. The reml criterion is a joint Laplace integral over the
+  predictor and coefficients, minus n * log(2*pi) / 2; its coefficients are
+  joint modes. logLik() reports the criterion of the fitted method. See the
+  Python class documentation for the formulas. These approximate criteria
+  would be exact for a Gaussian response, but they are not ordinary glm()
+  log likelihoods.
 }

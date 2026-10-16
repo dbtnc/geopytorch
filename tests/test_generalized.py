@@ -2,6 +2,7 @@
 
 import json
 import warnings
+from math import log, pi
 from pathlib import Path
 
 import gpytorch
@@ -9,7 +10,12 @@ import numpy as np
 import pytest
 import torch
 
-from geopytorch import GLM_FAMILIES, SpatialGeneralizedLinearModel, SpatialGLMLikelihood
+from geopytorch import (
+    GLM_FAMILIES,
+    SpatialGeneralizedLinearModel,
+    SpatialGLMLikelihood,
+    SpatialLinearModel,
+)
 from geopytorch.regression import _exact_settings
 
 torch.set_num_threads(1)
@@ -31,6 +37,7 @@ def test_conditional_mean_variance_and_differentiable_density(family):
         "beta": mu * (1 - mu) / (1 + phi),
         "Gamma": mu.square() / phi,
         "inverse.gaussian": mu.square() / phi,
+        "tweedie": phi * mu.pow(1.5),
     }[family]
     torch.testing.assert_close(distribution.mean, expected_mean)
     torch.testing.assert_close(distribution.variance, expected_variance)
@@ -46,6 +53,11 @@ def test_conditional_mean_variance_and_differentiable_density(family):
 REFERENCE = json.loads(
     (Path(__file__).parent / "fixtures/spglm_reference.json").read_text()
 )
+# Marginal Laplace ML targets, using the data of the REML reference above.
+ML_REFERENCE = json.loads(
+    (Path(__file__).parent / "fixtures/spglm_ml_reference.json").read_text()
+)
+FITS = REFERENCE["fits"] + ML_REFERENCE["fits"]
 
 
 def test_binomial_curvature_at_zero_logits():
@@ -73,10 +85,10 @@ def fit_reference(case, **kwargs):
 
 @pytest.mark.parametrize(
     "case",
-    REFERENCE["fits"],
+    FITS,
     ids=lambda c: f"{c['family']}-{c['covariance_model']}-{c['method']}",
 )
-def test_fixed_parameters_against_spmodel(case):
+def test_fixed_parameters_against_reference(case):
     model = fit_reference(case, training_iterations=0)
     np.testing.assert_allclose(model.coef_, case["coefficients"], atol=3e-5, rtol=3e-5)
     np.testing.assert_allclose(
@@ -109,12 +121,10 @@ def test_fixed_parameters_against_spmodel(case):
         assert torch.linalg.eigvalsh(prediction.covariance_matrix).min() > -1e-9
 
 
-@pytest.mark.parametrize("family", GLM_FAMILIES)
+@pytest.mark.parametrize("family", [f for f in GLM_FAMILIES if f != "tweedie"])
 @pytest.mark.parametrize("method", ("ml", "reml"))
 def test_implicit_laplace_gradient_matches_finite_differences(family, method):
-    case = next(
-        c for c in REFERENCE["fits"] if c["family"] == family and c["method"] == method
-    )
+    case = next(c for c in FITS if c["family"] == family and c["method"] == method)
     model = fit_reference(case, training_iterations=0)
     parameters = (
         model._all_parameters
@@ -142,7 +152,7 @@ def test_implicit_laplace_gradient_matches_finite_differences(family, method):
             )
 
 
-@pytest.mark.parametrize("family", GLM_FAMILIES)
+@pytest.mark.parametrize("family", [f for f in GLM_FAMILIES if f != "tweedie"])
 def test_optimization_and_refitting(family):
     case = next(
         c for c in REFERENCE["fits"] if c["family"] == family and c["method"] == "reml"
@@ -211,7 +221,7 @@ def test_validation_and_fixed_zero_components():
 @pytest.mark.parametrize(
     "case", REFERENCE["estimated"], ids=lambda c: f"{c['family']}-{c['method']}"
 )
-def test_estimated_parameters_against_spmodel(case):
+def test_estimated_parameters_against_reference(case):
     with warnings.catch_warnings(record=True) as diagnostics:
         warnings.simplefilter("always")
         model = fit_reference(case, fixed=[False, True, True], training_iterations=300)
@@ -236,14 +246,20 @@ def test_estimated_parameters_against_spmodel(case):
 
 
 @pytest.mark.parametrize(
-    "case", REFERENCE["dispersion_fits"], ids=lambda c: f"{c['family']}-{c['method']}"
+    "case",
+    REFERENCE["dispersion_fits"] + ML_REFERENCE["dispersion_fits"],
+    ids=lambda c: f"{c['family']}-{c['method']}",
 )
-def test_interior_dispersion_estimates_against_spmodel(case):
+def test_dispersion_estimates_against_reference(case):
     model = fit_reference(case, fixed=[True, True, True], training_iterations=150)
     assert model.converged_
-    assert model.dispersion_.item() == pytest.approx(
-        case["estimated_dispersion"], rel=3e-4
-    )
+    if case.get("limit") == "poisson":
+        # The ML size diverges; its criterion approaches the Poisson limit.
+        assert 1 / model.dispersion_.item() < 1e-4
+    else:
+        assert model.dispersion_.item() == pytest.approx(
+            case["estimated_dispersion"], rel=3e-4
+        )
     np.testing.assert_allclose(model.coef_, case["coefficients"], atol=4e-5, rtol=4e-5)
     attr = "log_likelihood_" if case["method"] == "ml" else "restricted_log_likelihood_"
     assert getattr(model, attr).item() == pytest.approx(
@@ -251,9 +267,10 @@ def test_interior_dispersion_estimates_against_spmodel(case):
     )
 
 
-@pytest.mark.parametrize("family", GLM_FAMILIES)
-def test_single_precision_fixed_fits(family):
-    case = next(c for c in REFERENCE["fits"] if c["family"] == family)
+@pytest.mark.parametrize("family", [f for f in GLM_FAMILIES if f != "tweedie"])
+@pytest.mark.parametrize("method", ("ml", "reml"))
+def test_single_precision_fixed_fits(family, method):
+    case = next(c for c in FITS if c["family"] == family and c["method"] == method)
     model = SpatialGeneralizedLinearModel(family).fit(
         torch.tensor(REFERENCE["coords"], dtype=torch.float32),
         case["y"],
@@ -262,6 +279,7 @@ def test_single_precision_fixed_fits(family):
         offset=REFERENCE["offset"],
         initial=case["initial"],
         dispersion=case["dispersion"],
+        likelihood_method=method,
         training_iterations=0,
     )
     np.testing.assert_allclose(model.coef_, case["coefficients"], atol=5e-4, rtol=5e-4)
@@ -304,3 +322,155 @@ def test_inverse_gaussian_sampling_moments():
     samples = distribution.sample((100000,))
     assert samples.mean().item() == pytest.approx(distribution.mean.item(), rel=0.01)
     assert samples.var().item() == pytest.approx(distribution.variance.item(), rel=0.03)
+
+
+class _GaussianResponse(SpatialGeneralizedLinearModel):
+    """Identity-link Gaussian response, for which both Laplace criteria are exact."""
+
+    response_variance = 0.7
+
+    def _conditional(self, eta):
+        return torch.distributions.Normal(eta, self.response_variance**0.5).log_prob(
+            self.train_y_
+        )
+
+
+@pytest.mark.parametrize("sill", (0.2, 0.6, 1.8))
+def test_criteria_are_exact_for_a_gaussian_response(sill):
+    y = next(c["y"] for c in FITS if c["family"] == "Gamma")
+    args = (REFERENCE["coords"], y, REFERENCE["design"])
+    exact = SpatialLinearModel().fit(
+        *args, initial=[sill, 0.3, 0.1 + 0.7], training_iterations=0
+    )
+    constant = 0.5 * len(y) * log(2 * pi)
+    for method in ("ml", "reml"):
+        # Gamma only validates the positive responses; the density is Gaussian.
+        model = _GaussianResponse("Gamma").fit(
+            *args,
+            initial=[sill, 0.3, 0.1],
+            likelihood_method=method,
+            training_iterations=0,
+        )
+        torch.testing.assert_close(model.coef_, exact.coef_, rtol=1e-9, atol=1e-10)
+        torch.testing.assert_close(
+            model.log_likelihood_, exact.log_likelihood_, rtol=1e-11, atol=1e-10
+        )
+        torch.testing.assert_close(
+            model.restricted_log_likelihood_ + constant,
+            exact.restricted_log_likelihood_,
+            rtol=1e-11,
+            atol=1e-10,
+        )
+        torch.testing.assert_close(
+            model.coef_covariance_, exact.coef_covariance_, rtol=1e-8, atol=1e-10
+        )
+
+
+class _PreciseGaussianResponse(_GaussianResponse):
+    response_variance = 0.2
+
+
+def test_ml_estimate_is_stationary_for_exact_gaussian_ml():
+    y = next(c["y"] for c in FITS if c["family"] == "Gamma")
+    args = (REFERENCE["coords"], y, REFERENCE["design"])
+    model = _PreciseGaussianResponse("Gamma").fit(
+        *args,
+        initial=[0.6, 0.3, 0.0],
+        fixed=[False, True, True],
+        likelihood_method="ml",
+        estimate_dispersion=False,
+    )
+    assert model.converged_
+    sill = model.covariance_parameters_[0].item()
+    assert sill > 0.5
+
+    def exact(value):
+        return (
+            SpatialLinearModel()
+            .fit(
+                *args,
+                initial=[value, 0.3, 0.2],
+                likelihood_method="ml",
+                training_iterations=0,
+            )
+            .log_likelihood_.item()
+        )
+
+    assert model.log_likelihood_.item() == pytest.approx(exact(sill), abs=1e-9)
+    step = 1e-4 * sill
+    slope = (exact(sill + step) - exact(sill - step)) / (2 * step)
+    assert slope == pytest.approx(0, abs=1e-5)
+
+
+BOUNDARY_X = torch.linspace(0, 1, 12, dtype=torch.float64)[:, None]
+INTERCEPT = torch.ones(12, 1, dtype=torch.float64)
+GROUP = torch.cat((torch.zeros(6), torch.ones(6))).double()
+SLOPE = torch.cat((INTERCEPT, torch.linspace(-1, 1, 12)[:, None].double()), dim=1)
+
+
+@pytest.mark.parametrize(
+    "family, y, design",
+    [
+        ("poisson", torch.zeros(12), INTERCEPT),
+        ("nbinomial", torch.zeros(12), INTERCEPT),
+        ("tweedie", torch.zeros(12), INTERCEPT),
+        ("binomial", torch.zeros(12), INTERCEPT),
+        ("binomial", torch.ones(12), INTERCEPT),
+        ("binomial", GROUP, torch.cat((INTERCEPT, GROUP[:, None]), dim=1)),
+        ("binomial", (SLOPE[:, 1] > 0).double(), SLOPE),
+        ("poisson", 3 * (1 - GROUP), torch.cat((INTERCEPT, GROUP[:, None]), dim=1)),
+    ],
+    ids=[
+        "zero-poisson",
+        "zero-nbinomial",
+        "zero-tweedie",
+        "zero-binomial",
+        "one-binomial",
+        "separated-binomial",
+        "separated-slope",
+        "zero-poisson-group",
+    ],
+)
+@pytest.mark.parametrize("method", ("ml", "reml"))
+def test_responses_without_finite_coefficients_are_rejected(family, y, design, method):
+    for tolerance in (1e-4, 1e-7, 1e-10):
+        with pytest.raises(ValueError, match="no finite coefficient estimate"):
+            SpatialGeneralizedLinearModel(family).fit(
+                BOUNDARY_X,
+                y,
+                design,
+                initial=(0.5, 0.3, 0.1),
+                likelihood_method=method,
+                training_iterations=0,
+                mode_tolerance=tolerance,
+            )
+
+
+@pytest.mark.parametrize("method", ("ml", "reml"))
+def test_boundary_responses_with_finite_coefficients_still_fit(method):
+    overlap = GROUP.clone()
+    overlap[[0, 6]] = 1 - overlap[[0, 6]]
+    group = torch.cat((INTERCEPT, GROUP[:, None]), dim=1)
+    counts = torch.tensor([0, 2, 1, 0, 3, 1, 0, 0, 2, 1, 0, 4], dtype=torch.float64)
+    for family, y, design in (
+        ("binomial", overlap, group),
+        ("poisson", counts, group),
+        ("tweedie", counts / 2, SLOPE),
+    ):
+        model = SpatialGeneralizedLinearModel(family).fit(
+            BOUNDARY_X,
+            y,
+            design,
+            initial=(0.5, 0.3, 0.1),
+            likelihood_method=method,
+            training_iterations=0,
+        )
+        assert model.converged_
+        assert bool((model.coef_.abs() < 10).all())
+
+
+def test_ml_fits_have_no_latent_mode_weights():
+    case = next(c for c in ML_REFERENCE["fits"] if c["family"] == "poisson")
+    model = fit_reference(case, training_iterations=0)
+    with pytest.raises(ValueError, match="REML"):
+        model.weights(REFERENCE["newcoords"], REFERENCE["newdesign"])

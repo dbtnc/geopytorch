@@ -19,6 +19,9 @@ glm_fixture <- function(
     d$failures <- 8 - d$y
     formula <- cbind(y, failures) ~ z + group + offset(log(exposure))
   }
+  if (family == "tweedie") {
+    d$y <- rep(c(0, .2, .8, 1.5, 3), 4)
+  }
   if (family == "beta") {
     d$y <- d$y / 6
   }
@@ -41,7 +44,8 @@ test_that("all families fit through reticulate and support R generics", {
     "binomial",
     "beta",
     "Gamma",
-    "inverse.gaussian"
+    "inverse.gaussian",
+    "tweedie"
   )) {
     setup <- glm_fixture(family)
     fit <- setup$fit
@@ -51,6 +55,9 @@ test_that("all families fit through reticulate and support R generics", {
     expect_equal(dim(vcov(fit)), c(3L, 3L))
     expect_equal(nobs(fit), 20L)
     expect_equal(attr(logLik(fit), "df"), 0L)
+    previous <- fit
+    previous$power_estimated <- NULL
+    expect_equal(logLik(previous), logLik(fit))
     expect_equal(residuals(fit), fit$response - fitted(fit))
     expect_s3_class(summary(fit), "summary.geopytorch_spglm")
     expect_output(print(fit), "spatial GLM")
@@ -129,7 +136,102 @@ test_that("binomial factors and explicit totals agree with matrix responses", {
   )
 })
 
+test_that("ml uses marginal Laplace coefficients and reports their df", {
+  setup <- glm_fixture()
+  ml <- spglm(
+    y ~ z + group + offset(log(exposure)),
+    "poisson",
+    setup$data,
+    c("s1", "s2"),
+    initial = c(.7, .3, .2),
+    likelihood_method = "ml",
+    training_iterations = 0L
+  )
+  expect_true(ml$converged)
+  expect_equal(attr(logLik(ml), "df"), 3L)
+  expect_equal(as.numeric(logLik(ml)), ml$log_likelihood)
+  expect_true(all(is.finite(coef(ml))))
+  expect_true(all(eigen(vcov(ml), only.values = TRUE)$values > 0))
+  # REML coefficients are joint modes, so the two estimators differ.
+  expect_false(isTRUE(all.equal(coef(ml), coef(setup$fit), tolerance = 1e-8)))
+  expect_length(kriging_weights(setup$fit, setup$data[1:2, ]), 40L)
+  expect_error(kriging_weights(ml, setup$data[1:2, ]), "REML")
+})
+
+test_that("responses without finite coefficients are rejected", {
+  setup <- glm_fixture()
+  d <- setup$data
+  d$y <- as.numeric(d$group == "b")
+  for (method in c("reml", "ml")) {
+    expect_error(
+      spglm(
+        y ~ group,
+        "binomial",
+        d,
+        c("s1", "s2"),
+        likelihood_method = method,
+        training_iterations = 0L
+      ),
+      "no finite coefficient"
+    )
+  }
+  d$y <- 0
+  expect_error(
+    spglm(y ~ z, "poisson", d, c("s1", "s2"), training_iterations = 0L),
+    "no finite coefficient"
+  )
+})
+
 test_that("the Gaussian R entry point is splm", {
   expect_true(is.function(splm))
   expect_false("spatial_linear_model" %in% getNamespaceExports("geopytorch"))
+})
+
+test_that("Tweedie power controls and response variance cross the R interface", {
+  setup <- glm_fixture("tweedie")
+  fit <- setup$fit
+  expect_equal(fit$power, 1.5)
+  expect_false(fit$power_estimated)
+  expect_equal(summary(fit)$power, 1.5)
+  expect_output(print(summary(fit)), "Tweedie power")
+  predicted <- predict(fit, setup$data)
+  observed <- predict(fit, setup$data, observation_noise = TRUE)
+  expect_equal(
+    observed$variance - predicted$variance,
+    fit$dispersion * predicted$mean^fit$power,
+    tolerance = 1e-8
+  )
+  for (estimate in c(FALSE, TRUE)) {
+    estimated <- spglm(
+      y ~ z,
+      "tweedie",
+      setup$data,
+      c("s1", "s2"),
+      initial = c(.3, .3, .1),
+      fixed = c(TRUE, TRUE, TRUE),
+      power = 1.4,
+      estimate_power = estimate,
+      training_iterations = 150L
+    )
+    expect_true(estimated$converged)
+    expect_identical(estimated$power_estimated, estimate)
+    expect_equal(attr(logLik(estimated), "df"), 1L + as.integer(estimate))
+    expect_true(estimated$power > 1 && estimated$power < 2)
+    if (!estimate) expect_equal(estimated$power, 1.4)
+  }
+  expect_error(
+    spglm(
+      y ~ z,
+      "tweedie",
+      setup$data,
+      c("s1", "s2"),
+      power = 2,
+      training_iterations = 0L
+    ),
+    "power"
+  )
+  expect_error(
+    spglm(y ~ z, "tweedie", setup$data, c("s1", "s2"), estimate_power = NA),
+    "estimate_power"
+  )
 })

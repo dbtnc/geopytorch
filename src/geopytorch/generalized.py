@@ -1,4 +1,4 @@
-"""Dense spatial GLMs with profiled coefficients and Laplace curvature."""
+"""Dense spatial GLMs with marginal Laplace ML and joint Laplace REML."""
 
 from __future__ import annotations
 
@@ -26,6 +26,75 @@ def _vector(value, n, like, name):
     return result
 
 
+def _nonnegative_least_squares(matrix, target):
+    """Lawson--Hanson active-set solution of min ||matrix z - target||, z >= 0."""
+    columns = matrix.shape[1]
+    z = matrix.new_zeros(columns)
+    passive = torch.zeros(columns, dtype=torch.bool, device=matrix.device)
+    eps = torch.finfo(matrix.dtype).eps
+    tolerance = 10 * eps * matrix.abs().sum(0).max() * max(matrix.shape)
+    blocked = torch.zeros_like(passive)
+    for _ in range(3 * columns + 1):
+        gradient = matrix.mT @ (target - matrix @ z)
+        candidates = ~passive & ~blocked & (gradient > tolerance)
+        if not bool(candidates.any()):
+            return z
+        index = torch.where(candidates, gradient, -torch.inf).argmax()
+        passive[index] = True
+        while True:
+            trial = matrix.new_zeros(columns)
+            trial[passive] = torch.linalg.lstsq(
+                matrix[:, passive], target[:, None]
+            ).solution.squeeze(1)
+            if bool((trial[passive] > 0).all()):
+                z = trial
+                break
+            blocking = passive & (trial <= 0)
+            step = (z[blocking] / (z[blocking] - trial[blocking])).min()
+            z = z + step * (trial - z)
+            passive &= z > tolerance
+            z[~passive] = 0
+        # A column rejected at once only reflects rounding; do not retry it.
+        blocked[index] = not bool(passive[index])
+    raise FloatingPointError("separation check did not converge")
+
+
+def _separated_rows(design, direction):
+    """Rows driven to their support boundary by a coefficient recession direction.
+
+    ``direction`` is +1 or -1 where the conditional density increases toward
+    eta=+inf or -inf, and 0 where it decreases in both directions. A finite
+    concave joint mode exists unless some X d != 0 has direction * X d >= 0 and
+    X d = 0 in rows with zero direction. By Gordan's alternative, no such d
+    exists exactly when positive multipliers balance the signed rows of an
+    orthonormal basis of the design columns; nonnegative least squares finds
+    either those multipliers or such a direction.
+    """
+    basis = torch.linalg.qr(design).Q
+    boundary = direction != 0
+    rows = torch.cat(
+        (
+            direction[boundary, None] * basis[boundary],
+            basis[~boundary],
+            -basis[~boundary],
+        )
+    )
+    z = _nonnegative_least_squares(rows.mT, -rows.sum(0))
+    certificate = basis @ (rows.mT @ (1 + z))
+    scale = certificate.abs().max()
+    eps = torch.finfo(design.dtype).eps
+    if scale <= 1e3 * eps * (1 + z).sum():
+        return torch.zeros_like(boundary)
+    certificate = certificate / scale
+    tolerance = 1e3 * eps * len(design)
+    valid = bool((certificate[~boundary].abs() <= tolerance).all()) and bool(
+        (direction[boundary] * certificate[boundary] >= -tolerance).all()
+    )
+    if not valid:
+        return torch.zeros_like(boundary)
+    return boundary & (direction * certificate > tolerance)
+
+
 def _glm_theta(value):
     if isinstance(value, torch.Tensor):
         value = value.detach().cpu().numpy()
@@ -46,18 +115,33 @@ def _glm_theta(value):
 class SpatialGeneralizedLinearModel(SpatialLinearModel):
     """Fit a non-Gaussian response with a Gaussian spatial linear predictor.
 
-    The six families use log links, except binomial and beta which use logit.
+    The families use log links, except binomial and beta which use logit.
     Covariance models and range conventions match SpatialLinearModel. The
     independent nugget is on the link scale, separate from response dispersion.
     Computation uses all observations, O(n**2) storage and O(n**3) factorizations.
 
-    Coefficients are profiled by GLS on the latent predictor. For covariance
-    Sigma, let A=(X' Sigma^-1 X)^-1 and P=Sigma^-1-Sigma^-1 X A X' Sigma^-1.
-    The latent mode maximizes log p(y|w+offset) - w' P w/2. With H the negative
-    Hessian at this mode, the reported profile Laplace log likelihood is
-    log p(y|w+offset) + log N(w-X beta; 0, Sigma) - log|H|/2.
-    REML also adds log|A|/2 + p*log(2*pi)/2. This convention retains the
-    Gaussian normalizing constant; comparisons must use the same convention.
+    The latent predictor is w = X beta + u, with u ~ N(0, Sigma), and W is the
+    negative Hessian of log p(y|w+offset) in w. ML uses the marginal Laplace
+    log likelihood: for fixed beta, w is the mode of
+    log p(y|w+offset) + log N(w; X beta, Sigma), and the criterion is that sum
+    plus n*log(2*pi)/2 - log|Sigma^-1 + W|/2. ML coefficients maximize it at the
+    covariance parameters, and their covariance is its inverse negative Hessian
+    in beta, conditional on covariance and response parameters.
+
+    REML is a joint Laplace approximation to integration over w and beta, with
+    a flat coefficient measure, minus n*log(2*pi)/2. With A=(X' Sigma^-1 X)^-1
+    and P=Sigma^-1-Sigma^-1 X A X' Sigma^-1, the joint mode w maximizes
+    log p(y|w+offset) - w' P w/2, beta = A X' Sigma^-1 w, and the criterion is
+    log p(y|w+offset) + log N(w; X beta, Sigma) - log|P + W|/2 + log|A|/2
+    + p*log(2*pi)/2. REML coefficients are these joint modes.
+
+    ``log_likelihood_`` is the ML criterion at the reported coefficients and
+    ``restricted_log_likelihood_`` the REML criterion, both at the fitted
+    covariance and response parameters. Responses without a finite coefficient
+    mode, such as all-zero counts with an intercept or separated binomial
+    outcomes, are rejected. For an identity-link Gaussian response both would be
+    exact: ML equals SpatialLinearModel's ML, and REML its REML minus
+    n*log(2*pi)/2.
     """
 
     def __init__(self, family, covariance_model="exponential", *, matern_nu=1.5):
@@ -82,6 +166,10 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
         parameter_bounds=None,
         mode_iterations=100,
         mode_tolerance=None,
+        power=1.5,
+        estimate_power=True,
+        power_bounds=(1.1, 1.999),
+        max_series_terms=16385,
     ):
         """Fit covariance and dispersion by LBFGS, with an inner Newton mode solve.
 
@@ -90,12 +178,23 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
         nugget can be zero if total variance is positive. Zero training iterations
         fixes all covariance parameters and dispersion, but still estimates the
         latent mode and regression coefficients. Dispersion is estimated only
-        for the four families which have a free dispersion parameter.
+        for families which have a free dispersion parameter.
 
         ``trials`` supplies positive integer binomial totals; responses remain
         success counts. ``offset`` is added on the link scale. Bounds use the
         same physical units and transformations as SpatialLinearModel.
         Failed starts retain their best finite iterate and report failure.
+        ``mode_iterations`` and ``mode_tolerance`` limit Newton solves for the
+        latent mode, by its maximum absolute score. With ML they also limit the
+        Newton solve for the coefficients, which stops when its squared Newton
+        decrement is below ``mode_tolerance**2``.
+
+        For Tweedie, ``power`` is initially 1.5 and is estimated by default.
+        ``estimate_power=False`` fixes it anywhere in (1, 2). Estimated power
+        stays strictly within ``power_bounds``. Zero training iterations fixes
+        power too. ``max_series_terms`` caps the adaptive density series; failure
+        to meet the tail tolerance is reported, never silently truncated.
+        These controls apply only to the Tweedie family.
         """
         self._fitted = self.converged_ = False
         for value, name, minimum in (
@@ -106,6 +205,8 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
                 raise TypeError(f"{name} must be an integer")
             if value < minimum:
                 raise ValueError(f"{name} must be at least {minimum}")
+        if not isinstance(estimate_power, bool):
+            raise TypeError("estimate_power must be a bool")
         if not isinstance(estimate_dispersion, bool):
             raise TypeError("estimate_dispersion must be a bool")
         if likelihood_method not in ("ml", "reml"):
@@ -140,6 +241,7 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
             0 if offset is None else offset, self.n_, self.train_x_, "offset"
         )
         self._validate_response()
+        self._check_finite_coefficients()
         self.mode_iterations = mode_iterations
         self.mode_tolerance = (
             (1e-7 if dtype == torch.float64 else 2e-4)
@@ -153,8 +255,18 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
         self._parameter_bounds = self._check_bounds(parameter_bounds)
         self._build_covariance()
         self.latent_likelihood_ = self.likelihood_
-        self.likelihood_ = SpatialGLMLikelihood(self.family).to(self.train_x_)
+        self.power_estimated_ = bool(
+            estimate_power and training_iterations and self.family == "tweedie"
+        )
+        self.likelihood_ = SpatialGLMLikelihood(
+            self.family, max_series_terms=max_series_terms
+        ).to(self.train_x_)
         self.likelihood_.dispersion = dispersion
+        if self.family == "tweedie":
+            self.likelihood_.set_power_bounds(
+                power_bounds if self.power_estimated_ else (1.0, 2.0)
+            )
+            self.likelihood_.power = power
         self.mean_module_ = gpytorch.means.LinearMean(self.p_, bias=False).to(
             self.train_x_
         )
@@ -170,10 +282,11 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
             and self.likelihood_.has_dispersion
         )
         self._all_parameters = self._parameters + [self.likelihood_.raw_dispersion]
-        for parameter, free in zip(
-            self._all_parameters,
-            [not x for x in self.fixed_] + [self.dispersion_estimated_],
-        ):
+        free_parameters = [not x for x in self.fixed_] + [self.dispersion_estimated_]
+        if self.family == "tweedie":
+            self._all_parameters.append(self.likelihood_.raw_power)
+            free_parameters.append(self.power_estimated_)
+        for parameter, free in zip(self._all_parameters, free_parameters):
             parameter.requires_grad_(free)
         self._parameters = [p for p in self._all_parameters if p.requires_grad]
         self.covariance_estimated_ = sum(not x for x in self.fixed_)
@@ -213,7 +326,10 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
         with _exact_settings(), torch.enable_grad():
             for start in initial_values:
                 self._set_theta(start)
+                self._coefficient_start = None
                 self.likelihood_.dispersion = dispersion
+                if self.family == "tweedie":
+                    self.likelihood_.power = power
                 if self._parameters:
                     self.optimizer_results_.append(
                         self._optimize_glm(training_iterations)
@@ -223,10 +339,14 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
                     self.optimizer_results_.append(
                         {
                             "success": True,
-                            "message": "covariance and dispersion fixed",
+                            "message": "covariance and response parameters fixed",
                             "objective": objective,
                             "parameters": self._current_theta().cpu().tolist(),
                             "dispersion": self.likelihood_.dispersion.item(),
+                            "power": self._current_power(),
+                            "raw_power": None
+                            if self.family != "tweedie"
+                            else self.likelihood_.raw_power.detach().item(),
                             "iterations": 0,
                             "evaluations": 1,
                             "gradient_max": 0.0,
@@ -244,8 +364,12 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
             best = min(candidates, key=lambda r: r["objective"])
             self._set_theta(best["parameters"])
             self.likelihood_.dispersion = best["dispersion"]
+            if self.family == "tweedie":
+                self.likelihood_.initialize(
+                    raw_power=self.likelihood_.raw_power.new_tensor(best["raw_power"])
+                )
             self.converged_ = best["success"]
-            state = self._profile_glm()
+            state = self._profile_glm(final=True)
             self._store_fit(state)
         self._fitted = True
         if not self.converged_:
@@ -260,6 +384,9 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
         if self.family in ("poisson", "nbinomial", "binomial"):
             if bool(((y < 0) | (y != y.round())).any()):
                 raise ValueError("count responses must be nonnegative integers")
+        elif self.family == "tweedie":
+            if bool((y < 0).any()):
+                raise ValueError("Tweedie responses must be nonnegative")
         elif self.family == "beta":
             if bool(((y <= 0) | (y >= 1)).any()):
                 raise ValueError(
@@ -276,6 +403,27 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
         ):
             raise ValueError(
                 "binomial trials must be positive integers at least as large as each response"
+            )
+
+    def _check_finite_coefficients(self):
+        """Reject zero or full-success responses that coefficients can fit exactly."""
+        if self.family in ("beta", "Gamma", "inverse.gaussian"):
+            return
+        y, trials = self.train_y_.detach().cpu(), self.trials_.detach().cpu()
+        # These densities increase toward the boundary and decrease elsewhere.
+        direction = -(y == 0).double()
+        if self.family == "binomial":
+            direction = direction + (y == trials).double()
+        design = self.design_matrix_.detach().cpu().double()
+        separated = _separated_rows(design, direction)
+        if bool(separated.any()):
+            rows = separated.nonzero().flatten().tolist()
+            shown = ", ".join(map(str, rows[:10])) + (", ..." if len(rows) > 10 else "")
+            kind = "zero or full-success" if self.family == "binomial" else "zero"
+            raise ValueError(
+                "no finite coefficient estimate exists: coefficients can move "
+                f"{len(rows)} fitted means toward {kind} responses without bound "
+                f"(0-based rows {shown})"
             )
 
     def _set_theta(self, theta):
@@ -296,18 +444,35 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
             )
         )
 
+    def _current_power(self):
+        power = self.likelihood_.power
+        return None if power is None else power.detach().item()
+
     def _conditional(self, eta):
         return self.likelihood_(eta, trials=self.trials_).log_prob(self.train_y_)
 
     def _derivatives(self, eta):
         value = self._conditional(eta)
+        if self.family == "tweedie":
+            power, phi = self.likelihood_.power, self.likelihood_.dispersion
+            first = self.train_y_ * torch.exp((1 - power) * eta)
+            second = torch.exp((2 - power) * eta)
+            return (
+                value,
+                (first - second) / phi,
+                ((power - 1) * first + (2 - power) * second) / phi,
+            )
         score = torch.autograd.grad(value.sum(), eta, create_graph=True)[0]
         curvature = -torch.autograd.grad(score.sum(), eta, create_graph=True)[0]
         return value, score, curvature
 
-    def _mode(self, precision):
+    def _mode(self, precision, center=None, start=None):
+        """Newton solve for argmax log p(y|w+offset) - (w-c)' precision (w-c)/2."""
         precision = precision.detach()
-        if self.family in ("binomial", "beta"):
+        center = torch.zeros_like(self.train_y_) if center is None else center.detach()
+        if start is not None:
+            w = start.detach().clone()
+        elif self.family in ("binomial", "beta"):
             w = torch.zeros_like(self.train_y_) - self.offset_
         else:
             w = 0.5 * torch.log1p(self.train_y_) - self.offset_
@@ -315,7 +480,7 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
         for iteration in range(self.mode_iterations):
             eta = (w + self.offset_).detach().requires_grad_()
             values, d, curvature = self._derivatives(eta)
-            score = d.detach() - precision @ w
+            score = d.detach() - precision @ (w - center)
             score_max = score.abs().max().item()
             if score_max <= self.mode_tolerance:
                 self.mode_diagnostics_ = {
@@ -329,7 +494,7 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
                 shift = (-torch.linalg.eigvalsh(H).min()).clamp_min(0) + 1e-4
                 chol = torch.linalg.cholesky(H + shift * identity)
             step = torch.cholesky_solve(score[:, None], chol).squeeze(1)
-            old = values.detach().sum() - 0.5 * w @ precision @ w
+            old = values.detach().sum() - 0.5 * (w - center) @ precision @ (w - center)
             slope = score @ step
             scale = 1.0
             accepted = False
@@ -337,10 +502,9 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
                 trial = w + scale * step
                 with torch.no_grad():
                     try:
-                        objective = (
-                            self._conditional(trial + self.offset_).sum()
-                            - 0.5 * trial @ precision @ trial
-                        )
+                        objective = self._conditional(
+                            trial + self.offset_
+                        ).sum() - 0.5 * (trial - center) @ precision @ (trial - center)
                     except ValueError:
                         objective = w.new_tensor(-float("inf"))
                 roundoff = 64 * torch.finfo(w.dtype).eps * (1 + old.abs())
@@ -358,7 +522,8 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
                         self._conditional(candidate).sum(), candidate
                     )[0].detach()
                     improves = bool(
-                        (trial_score - precision @ trial).abs().max() < score_max
+                        (trial_score - precision @ (trial - center)).abs().max()
+                        < score_max
                     )
                 if improves:
                     w = trial.detach()
@@ -371,7 +536,26 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
             f"latent mode did not converge in {self.mode_iterations} iterations (score {score_max:.3g})"
         )
 
-    def _profile_glm(self):
+    def _newton_step(self, w, precision, center):
+        """One Newton step from a solved mode, attaching its implicit derivatives."""
+        eta = w + self.offset_
+        if not eta.requires_grad:
+            eta = eta.detach().requires_grad_()
+        _, score, curvature = self._derivatives(eta)
+        hessian = precision + torch.diag(curvature)
+        return w + torch.linalg.solve(hessian, score - precision @ (w - center))
+
+    def _laplace_terms(self, w, center, inverse):
+        """Log density minus the Gaussian quadratic form, and chol(Sigma^-1 + W)."""
+        eta = w + self.offset_
+        if not eta.requires_grad:
+            eta = eta.detach().requires_grad_()
+        values, _, curvature = self._derivatives(eta)
+        residual = w - center
+        chol = torch.linalg.cholesky(inverse + torch.diag(curvature))
+        return values.sum() - 0.5 * residual @ inverse @ residual, chol
+
+    def _covariance_terms(self):
         X = self.design_matrix_
         prior = gpytorch.distributions.MultivariateNormal(
             torch.zeros_like(self.train_y_), self.kernel_(self._inputs)
@@ -386,27 +570,198 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
         B = A @ inverse_X.mT
         P = inverse - inverse_X @ B
         P = 0.5 * (P + P.mT)
-        root = self._mode(P).detach().requires_grad_()
-        _, score, curvature = self._derivatives(root + self.offset_)
-        H = P + torch.diag(curvature)
-        # One Newton correction attaches the implicit derivative of the solved mode.
-        w = root + torch.linalg.solve(H, score - P @ root)
-        values, _, curvature = self._derivatives(w + self.offset_)
-        Hchol = torch.linalg.cholesky(P + torch.diag(curvature))
-        beta = B @ w
-        residual = w - X @ beta
-        ml = values.sum() + prior.log_prob(residual) - Hchol.diagonal().log().sum()
-        reml = ml - info_chol.diagonal().log().sum() + 0.5 * self.p_ * log(2 * pi)
         return {
-            "beta": beta,
-            "w": w,
+            "prior": prior,
+            "inverse": inverse,
+            "info_chol": info_chol,
             "A": A,
             "B": B,
-            "inverse": inverse,
-            "Hinv": torch.cholesky_inverse(Hchol),
-            "ml": ml,
-            "reml": reml,
+            "P": P,
         }
+
+    def _joint_mode(self, terms, *, marginal=False):
+        """REML criterion at the joint mode in the latent predictor and beta."""
+        X, P = self.design_matrix_, terms["P"]
+        zero = torch.zeros_like(self.train_y_)
+        # One Newton correction attaches the implicit derivative of the solved mode.
+        w = self._newton_step(self._mode(P), P, zero)
+        values, _, curvature = self._derivatives(w + self.offset_)
+        Hchol = torch.linalg.cholesky(P + torch.diag(curvature))
+        beta = terms["B"] @ w
+        h = values.sum() + terms["prior"].log_prob(w - X @ beta)
+        result = {
+            "beta": beta,
+            "w": w,
+            "Hchol": Hchol,
+            "reml": h
+            - Hchol.diagonal().log().sum()
+            - terms["info_chol"].diagonal().log().sum()
+            + 0.5 * self.p_ * log(2 * pi),
+        }
+        if marginal:
+            # The joint mode is also the latent mode at fixed beta = B w.
+            Qchol = torch.linalg.cholesky(terms["inverse"] + torch.diag(curvature))
+            result["ml"] = (
+                h + 0.5 * self.n_ * log(2 * pi) - Qchol.diagonal().log().sum()
+            )
+        return result
+
+    def _ml_coefficients(self, terms, beta, w):
+        """Maximize the marginal Laplace log likelihood in beta at fixed covariance."""
+        X = self.design_matrix_
+        inverse = terms["inverse"].detach()
+        inverse_X = inverse @ X
+        information = X.mT @ inverse_X
+
+        def evaluate(beta, start, gradient):
+            root = self._mode(inverse, X @ beta, start)
+            coefficients = beta.detach().requires_grad_(gradient)
+            center = X @ coefficients
+            # The log determinant makes the criterion first-order sensitive to
+            # mode error. Two Newton steps make its value, and its gradient
+            # through the mode's derivative, accurate to second order.
+            latent = self._newton_step(root, inverse, center)
+            latent = self._newton_step(latent, inverse, center)
+            quadratic, chol = self._laplace_terms(latent, center, inverse)
+            value = quadratic - chol.diagonal().log().sum()
+            score = torch.autograd.grad(value, coefficients)[0] if gradient else None
+            return value.detach(), score, latent.detach(), chol.detach()
+
+        value, score, w, chol = evaluate(beta.detach(), w, True)
+        eps = torch.finfo(X.dtype).eps
+        for iteration in range(self.mode_iterations):
+            # Fisher-type curvature: the exact Hessian without the log-determinant term.
+            curvature = information - inverse_X.mT @ torch.cholesky_solve(
+                inverse_X, chol
+            )
+            curvature_chol, info = torch.linalg.cholesky_ex(curvature)
+            if info.item():
+                shift = (-torch.linalg.eigvalsh(curvature).min()).clamp_min(0)
+                shift = shift + 1e-8 * information.diagonal().max()
+                curvature_chol = torch.linalg.cholesky(
+                    curvature
+                    + shift * torch.eye(self.p_, dtype=X.dtype, device=X.device)
+                )
+            step = torch.cholesky_solve(score[:, None], curvature_chol).squeeze(1)
+            decrement = (score @ step).item()
+            if decrement <= self.mode_tolerance**2:
+                self.mode_diagnostics_.update(
+                    coefficient_iterations=iteration, coefficient_decrement=decrement
+                )
+                return beta.detach(), w
+            # The latent mode moves with beta by Q^-1 Sigma^-1 X, to first order.
+            direction = torch.cholesky_solve(inverse_X, chol)
+            scale, accepted = 1.0, False
+            for _ in range(40):
+                trial = beta + scale * step
+                trial_score = None
+                try:
+                    trial_value, _, trial_w, trial_chol = evaluate(
+                        trial, w + direction @ (trial - beta), False
+                    )
+                except (FloatingPointError, ValueError, torch.linalg.LinAlgError):
+                    trial_value = value.new_tensor(-float("inf"))
+                roundoff = 64 * eps * (1 + value.abs())
+                finite = bool(torch.isfinite(trial_value))
+                accepted = finite and bool(
+                    trial_value >= value + 1e-4 * scale * decrement - roundoff
+                )
+                if not accepted and finite and decrement < 1e-6:
+                    # Near the optimum, density differences can lose precision.
+                    trial_value, trial_score, trial_w, trial_chol = evaluate(
+                        trial, trial_w, True
+                    )
+                    trial_step = torch.cholesky_solve(
+                        trial_score[:, None], curvature_chol
+                    )
+                    accepted = bool(trial_score @ trial_step.squeeze(1) < decrement)
+                if accepted:
+                    break
+                scale *= 0.5
+            if not accepted:
+                raise FloatingPointError("ML coefficient line search failed")
+            beta = trial.detach()
+            if trial_score is None:
+                value, score, w, chol = evaluate(beta, trial_w, True)
+            else:
+                value, score, w, chol = trial_value, trial_score, trial_w, trial_chol
+        raise FloatingPointError(
+            f"ML coefficients did not converge in {self.mode_iterations} iterations "
+            f"(squared Newton decrement {decrement:.3g})"
+        )
+
+    def _coefficient_hessian(self, beta, w, inverse):
+        """Exact Hessian in beta of the marginal Laplace criterion, by autograd."""
+        X = self.design_matrix_
+
+        def criterion(coefficients):
+            center = X @ coefficients
+            # Two Newton steps from the mode give exact second derivatives of the mode.
+            latent = self._newton_step(
+                self._newton_step(w, inverse, center), inverse, center
+            )
+            quadratic, chol = self._laplace_terms(latent, center, inverse)
+            return quadratic - chol.diagonal().log().sum()
+
+        return torch.autograd.functional.hessian(criterion, beta.detach())
+
+    def _profile_glm(self, final=False):
+        X = self.design_matrix_
+        terms = self._covariance_terms()
+        state = {"inverse": terms["inverse"]}
+        if self.likelihood_method_ == "reml":
+            joint = self._joint_mode(terms, marginal=final)
+            state.update(beta=joint["beta"], w=joint["w"], reml=joint["reml"])
+            if final:
+                Hinv = torch.cholesky_inverse(joint["Hchol"])
+                B = terms["B"]
+                state.update(
+                    ml=joint["ml"],
+                    B=B,
+                    coef_covariance=terms["A"] + B @ Hinv @ B.mT,
+                    latent_covariance=Hinv,
+                    cross_covariance=Hinv @ B.mT,
+                )
+            return state
+        start = None if final else self._coefficient_start
+        if start is None:
+            # Start from the joint mode; later evaluations reuse the last solution.
+            joint = self._joint_mode(terms)
+            start = (joint["beta"].detach(), joint["w"].detach())
+            state["reml"] = joint["reml"]
+        beta, root = self._ml_coefficients(terms, *start)
+        self._coefficient_start = (beta, root)
+        inverse = terms["inverse"]
+        # Beta is stationary, so only the latent mode needs its implicit derivative.
+        w = self._newton_step(root, inverse, X @ beta)
+        values, _, curvature = self._derivatives(w + self.offset_)
+        Qchol = torch.linalg.cholesky(inverse + torch.diag(curvature))
+        state.update(
+            beta=beta,
+            w=w,
+            ml=values.sum()
+            + terms["prior"].log_prob(w - X @ beta)
+            + 0.5 * self.n_ * log(2 * pi)
+            - Qchol.diagonal().log().sum(),
+        )
+        if final:
+            hessian = self._coefficient_hessian(beta, root, inverse.detach())
+            covariance_chol, info = torch.linalg.cholesky_ex(
+                -0.5 * (hessian + hessian.mT)
+            )
+            if info.item():
+                raise FloatingPointError(
+                    "the ML coefficient Hessian is not negative definite"
+                )
+            V = torch.cholesky_inverse(covariance_chol)
+            # The latent mode changes with beta by D = Q^-1 Sigma^-1 X.
+            D = torch.cholesky_solve(inverse @ X, Qchol)
+            state.update(
+                coef_covariance=V,
+                latent_covariance=torch.cholesky_inverse(Qchol) + D @ V @ D.mT,
+                cross_covariance=D @ V,
+            )
+        return state
 
     def _objective(self):
         state = self._profile_glm()
@@ -485,15 +840,19 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
             "evaluations": evaluations,
             "parameters": self._current_theta().cpu().tolist(),
             "dispersion": self.likelihood_.dispersion.detach().item(),
+            "power": self._current_power(),
+            "raw_power": None
+            if self.family != "tweedie"
+            else self.likelihood_.raw_power.detach().item(),
         }
 
     def _store_fit(self, state):
         state = {key: value.detach() for key, value in state.items()}
         self._state = state
         self.coef_ = state["beta"]
-        self.coef_covariance_ = state["A"] + state["B"] @ state["Hinv"] @ state["B"].mT
+        self.coef_covariance_ = state["coef_covariance"]
         self.latent_mode_ = state["w"]
-        self.latent_covariance_ = state["Hinv"]
+        self.latent_covariance_ = state["latent_covariance"]
         self.fitted_link_ = state["w"] + self.offset_
         self.fitted_values_ = self.likelihood_.inverse_link(
             self.fitted_link_, self.trials_
@@ -503,6 +862,11 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
             state["reml"],
         )
         self.dispersion_ = self.likelihood_.dispersion.detach().clone()
+        self.power_ = (
+            None
+            if self.likelihood_.power is None
+            else self.likelihood_.power.detach().clone()
+        )
         self.reml_design_constant_ = (
             0.5
             * torch.linalg.slogdet(
@@ -527,10 +891,12 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
         New latent predictors include an independent link-scale nugget, even
         at a training location. The link covariance accounts for coefficient
         estimation and latent-mode uncertainty, conditional on fitted covariance
-        and dispersion. Response means are inverse-link plug-in predictions;
-        their covariance uses the delta method, not integration over the link
-        distribution. ``observation_noise=True`` adds conditional response
-        variance on the response scale. Binomial response predictions are counts
+        and dispersion. With ML, latent-mode uncertainty adds the propagated
+        coefficient covariance to the Laplace covariance at fixed coefficients.
+        Response means are inverse-link plug-in predictions; their covariance
+        uses the delta method, not integration over the link distribution.
+        ``observation_noise=True`` adds conditional response variance on the
+        response scale. Binomial response predictions are counts
         for ``trials`` (one by default). Use ``fitted_values_`` for training fits.
         """
         if type not in ("link", "response"):
@@ -551,7 +917,6 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
             C = self.kernel_(self._inputs, inputs).to_dense()
             solved_C = state["inverse"] @ C
             discrepancy = X - solved_C.mT @ self.design_matrix_
-            weights = solved_C.mT + discrepancy @ state["B"]
             mean = (
                 self.mean_module_(X)
                 + solved_C.mT @ (state["w"] - self.design_matrix_ @ self.coef_)
@@ -561,10 +926,15 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
             covariance = covariance + self.latent_likelihood_.noise * torch.eye(
                 len(X), dtype=X.dtype, device=X.device
             )
+            cross = solved_C.mT @ state["cross_covariance"] @ discrepancy.mT
             covariance = (
-                covariance - C.mT @ solved_C + discrepancy @ state["A"] @ discrepancy.mT
+                covariance
+                - C.mT @ solved_C
+                + solved_C.mT @ state["latent_covariance"] @ solved_C
+                + cross
+                + cross.mT
+                + discrepancy @ state["coef_covariance"] @ discrepancy.mT
             )
-            covariance = covariance + weights @ state["Hinv"] @ weights.mT
             covariance = 0.5 * (covariance + covariance.mT)
             if type == "response":
                 derivative = self.likelihood_.link_derivative(mean, totals)
@@ -577,8 +947,14 @@ class SpatialGeneralizedLinearModel(SpatialLinearModel):
             return KrigingPrediction(mean.detach(), covariance.detach())
 
     def weights(self, locations, design_matrix):
-        """Weights mapping the offset-free fitted latent mode to a new predictor."""
+        """Weights mapping the offset-free fitted latent mode to a new predictor.
+
+        REML coefficients are linear in the latent mode; ML coefficients are not,
+        so ML fits have no such weights.
+        """
         inputs, X = self._prediction_inputs(locations, design_matrix)
+        if self.likelihood_method_ != "reml":
+            raise ValueError("weights are only defined for REML fits")
         with torch.no_grad(), _exact_settings():
             C = self.kernel_(self._inputs, inputs).to_dense()
             solved = self._state["inverse"] @ C

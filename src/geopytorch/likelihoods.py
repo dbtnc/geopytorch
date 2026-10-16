@@ -9,7 +9,17 @@ from gpytorch.likelihoods.likelihood import _OneDimensionalLikelihood
 from torch.distributions import constraints
 from torch.distributions.utils import broadcast_all
 
-GLM_FAMILIES = ("poisson", "nbinomial", "binomial", "beta", "Gamma", "inverse.gaussian")
+from geopytorch.tweedie import Tweedie
+
+GLM_FAMILIES = (
+    "poisson",
+    "nbinomial",
+    "binomial",
+    "beta",
+    "Gamma",
+    "inverse.gaussian",
+    "tweedie",
+)
 
 
 class _Binomial(torch.distributions.Binomial):
@@ -69,14 +79,27 @@ class SpatialGLMLikelihood(_OneDimensionalLikelihood):
     ``dispersion`` is fixed at one for Poisson and binomial. Otherwise it is
     negative-binomial size, beta precision, Gamma shape, or inverse-Gaussian
     shape divided by its mean. The inverse-Gaussian variance is mu**2/dispersion.
+    Tweedie dispersion is the variance multiplier in mu**power * dispersion.
     Binomial samples are success counts; ``trials`` defaults to one.
     """
 
-    def __init__(self, family, dispersion=1.0):
+    def __init__(self, family, dispersion=1.0, *, power=1.5, max_series_terms=16385):
         super().__init__()
         if family not in GLM_FAMILIES:
             raise ValueError(f"family must be one of {GLM_FAMILIES}")
         self.family = family
+        self.has_power = family == "tweedie"
+        self.max_series_terms = max_series_terms
+        if self.has_power:
+            if (
+                isinstance(max_series_terms, bool)
+                or not isinstance(max_series_terms, int)
+                or max_series_terms < 33
+            ):
+                raise ValueError("max_series_terms must be an integer of at least 33")
+            self.register_parameter("raw_power", torch.nn.Parameter(torch.zeros(())))
+            self.set_power_bounds((1.0, 2.0))
+            self.power = power
         self.has_dispersion = family not in ("poisson", "binomial")
         self.register_parameter("raw_dispersion", torch.nn.Parameter(torch.zeros(())))
         self.register_constraint(
@@ -105,8 +128,46 @@ class SpatialGLMLikelihood(_OneDimensionalLikelihood):
             )
         )
 
+    def set_power_bounds(self, bounds):
+        if len(bounds) != 2 or not 1 <= bounds[0] < bounds[1] <= 2:
+            raise ValueError("power_bounds must satisfy 1 <= lower < upper <= 2")
+        constraint = gpytorch.constraints.Interval(1.0, 2.0).to(self.raw_power)
+        constraint.lower_bound.copy_(self.raw_power.new_tensor(bounds[0]))
+        constraint.upper_bound.copy_(self.raw_power.new_tensor(bounds[1]))
+        if not bool(constraint.lower_bound < constraint.upper_bound):
+            raise ValueError("power_bounds must be distinguishable at the model dtype")
+        self.register_constraint("raw_power", constraint, replace=True)
+
+    @property
+    def power(self):
+        if not self.has_power:
+            return None
+        return self.raw_power_constraint.transform(self.raw_power)
+
+    @power.setter
+    def power(self, value):
+        if not self.has_power:
+            raise ValueError("power is only defined for Tweedie responses")
+        value = torch.as_tensor(
+            value, dtype=self.raw_power.dtype, device=self.raw_power.device
+        )
+        bounds = self.raw_power_constraint
+        if (
+            value.numel() != 1
+            or not bool(torch.isfinite(value))
+            or not bool((value > bounds.lower_bound) & (value < bounds.upper_bound))
+        ):
+            raise ValueError(
+                "power must lie strictly within power_bounds and between one and two"
+            )
+        self.initialize(raw_power=bounds.inverse_transform(value.reshape(())))
+
     def forward(self, function_samples, *args, trials=1, **kwargs):
         eta, phi = function_samples, self.dispersion
+        if self.has_power:
+            return Tweedie(
+                eta.exp(), phi, self.power, max_series_terms=self.max_series_terms
+            )
         if self.family == "binomial":
             return _Binomial(total_count=trials, logits=eta)
         if self.family == "beta":
